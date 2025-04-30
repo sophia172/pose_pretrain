@@ -1,0 +1,81 @@
+# Human3.6M dataset configuration
+
+name: "h36m"
+description: "Human3.6M dataset for 2D-to-3D pose estimation"
+
+# Paths
+paths:
+  base_dir: "ML dataset/H3.6M"
+  annotations_dir: "${paths.base_dir}/H3WB annotation"
+  
+  # Training data files (split into multiple parts due to size)
+  train_json_files:
+    - "${paths.annotations_dir}/2Dto3D_train_part1.json"
+    - "${paths.annotations_dir}/2Dto3D_train_part2.json"
+    - "${paths.annotations_dir}/2Dto3D_train_part3.json"
+    - "${paths.annotations_dir}/2Dto3D_train_part4.json"
+    - "${paths.annotations_dir}/2Dto3D_train_part5.json"
+    
+  # Test data (only 2D keypoints provided)
+  test_2d_json: "${paths.annotations_dir}/2Dto3D_test_2d.json"
+  
+  # Incomplete data files
+  incomplete_test_2d_json: "${paths.annotations_dir}/I2Dto3D_test_2d.json"
+  
+  # NPZ files with additional data
+  lift_data_npz: "${paths.base_dir}/2Dto3D_lift.npz"
+  incomplete_lift_data_npz: "${paths.base_dir}/Incomplete2Dto3D_lift.npz"
+  h3wb_train_new_format_npz: "${paths.base_dir}/H3WB_train_new_format.npz"
+
+# Dataset properties
+properties:
+  num_joints: 133
+  input_dimension: 2  # 2D pose
+  output_dimension: 3  # 3D pose
+  
+  # Various actions in the dataset
+  actions:
+    - "Walking"
+    - "WalkTogether"
+    - "Eating"
+    - "Smoking"
+    - "Discussion"
+    - "Directions"
+    - "Greeting"
+    - "Phoning"
+    - "Posing"
+    - "Purchases"
+    - "Sitting"
+    - "SittingDown"
+    - "Waiting"
+
+# Data preprocessing
+preprocessing:
+  normalize: true  # Normalize poses
+  mean_subtraction: true  # Subtract mean pose
+  scale_factor: 1.0
+  center_at_root_joint: true  # Center poses at root joint
+  
+  # Coordinates for specific parts of the body
+  hips_indices: [2, 3, 14, 15]  # Hip joint indices
+  spine_indices: [2, 3, 14, 15, 1, 0]  # Spine joint indices
+  head_indices: [16, 17, 18]  # Head joint indices
+  
+  # Camera parameters (for 2D projections)
+  use_camera_parameters: false
+  
+# Data augmentation
+augmentation:
+  enabled: true
+  flip: true  # Horizontal flip
+  flip_probability: 0.5
+  rotate:
+    enabled: true
+    max_rotation: 15.0  # Max rotation in degrees
+  scale:
+    enabled: true
+    min_scale: 0.8
+    max_scale: 1.2
+  jitter:
+    enabled: true
+    max_jitter: 0.02  # As fraction of pose size 

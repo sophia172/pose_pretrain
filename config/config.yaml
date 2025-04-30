@@ -1,0 +1,85 @@
+# Main configuration file for Human Pose Estimation Pretraining
+
+# Experiment settings
+experiment:
+  name: h36m_unsupervised_pretrain
+  description: "Unsupervised pretraining for Human3.6M dataset"
+  seed: 42
+  debug: false
+
+# Paths
+paths:
+  dataset: "ML dataset"
+  output_dir: "outputs"
+  model_dir: "${paths.output_dir}/models"
+  log_dir: "${paths.output_dir}/logs"
+  results_dir: "${paths.output_dir}/results"
+  pretrained_model: null  # Path to pretrained weights if continuing training
+
+# Dataset configuration
+data:
+  dataset: "h36m"  # Options: h36m, mpi_inf_3dhp
+  config_file: "config/data/h36m.yaml"
+  train_split_file: "train_part1.json,train_part2.json,train_part3.json,train_part4.json,train_part5.json"
+  val_split_file: "test_2d.json"
+  batch_size: 64
+  num_workers: 4
+  pin_memory: true
+  shuffle: true
+  sequence_length: 1  # Set > 1 for sequence data
+  stride: 1
+  keypoint_type: "both"  # Options: 2d, 3d, both
+  preload: false  # Whether to preload data in memory
+
+# Model configuration
+model:
+  name: "pretrain_model"
+  config_file: "config/models/pretrain_model1.yaml"
+  input_dim: 2  # 2D keypoint dimension
+  output_dim: 3  # 3D keypoint dimension
+  hidden_dims: [1024, 512]
+  dropout: 0.1
+  num_joints: 133
+  use_attention: true
+
+# Training configuration
+training:
+  epochs: 100
+  optimizer: "adam"  # Options: adam, sgd
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  lr_scheduler: "cosine"  # Options: step, cosine, plateau
+  lr_step_size: 30
+  lr_gamma: 0.1
+  early_stopping:
+    patience: 10
+    min_delta: 0.0001
+  grad_clip: 1.0
+  mixed_precision: true
+  resume: false
+
+# Loss configuration
+loss:
+  type: "l1"  # Options: l1, mse, huber
+  weights:
+    reconstruction: 1.0
+    consistency: 0.5
+    smoothness: 0.1
+
+# Logging and monitoring
+logging:
+  log_interval: 10  # Log training stats every N batches
+  val_interval: 1  # Run validation every N epochs
+  checkpoint_interval: 5  # Save model checkpoint every N epochs
+  keep_last_n_checkpoints: 3
+  tensorboard: true
+  wandb:
+    use: false
+    project: "hpe_pretrain"
+    entity: null
+
+# Distributed training
+distributed:
+  use: false
+  backend: "nccl"
+  world_size: 1 
