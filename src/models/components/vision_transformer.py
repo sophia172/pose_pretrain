@@ -9,8 +9,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import List, Optional, Dict, Any, Tuple, Union
 
-from src.models.components.attention import MultiHeadAttention, PositionalEncoding, JointRelationAttention
-from src.models.components.encoders import TransformerEncoderLayer, TransformerDecoderLayer
+from .attention import MultiHeadAttention, PositionalEncoding, JointRelationAttention
+from .encoders import TransformerEncoderLayer, TransformerDecoderLayer
 
 
 class KeypointPatchEmbedding(nn.Module):

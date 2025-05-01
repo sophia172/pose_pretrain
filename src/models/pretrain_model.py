@@ -9,8 +9,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Dict, List, Optional, Tuple, Union, Any
 
-from src.models.components.encoders import PoseEncoder, PoseDecoder
-from src.models.components.attention import PositionalEncoding
+from .components.encoders import PoseEncoder, PoseDecoder
+from .components.attention import PositionalEncoding
 
 
 class PretrainModel(nn.Module):

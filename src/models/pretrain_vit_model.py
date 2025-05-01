@@ -9,7 +9,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Dict, List, Optional, Tuple, Union, Any
 
-from src.models.components.vision_transformer import KeypointViT, Keypoint2KeypointVIT
+from .components.vision_transformer import KeypointViT, Keypoint2KeypointVIT
 
 
 class PretrainViTModel(nn.Module):

@@ -9,7 +9,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import List, Optional, Dict, Any, Tuple
 
-from src.models.components.attention import MultiHeadAttention, PositionalEncoding, JointRelationAttention
+from .attention import MultiHeadAttention, PositionalEncoding, JointRelationAttention
 
 
 class PoseEncoder(nn.Module):
