@@ -7,6 +7,7 @@ evaluation, and logging.
 import os
 import time
 import logging
+import platform
 from typing import Dict, List, Optional, Tuple, Union, Any, Callable
 
 import torch
@@ -14,6 +15,8 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 import numpy as np
+
+from ..utils.device import get_device
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +36,7 @@ class Trainer:
         optimizer: Optional[torch.optim.Optimizer] = None,
         scheduler: Optional[torch.optim.lr_scheduler._LRScheduler] = None,
         loss_fn: Optional[Callable] = None,
-        device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        device: Optional[torch.device] = None,
         output_dir: str = "outputs",
         experiment_name: str = "pretrain",
         max_epochs: int = 100,
@@ -77,7 +80,13 @@ class Trainer:
         self.optimizer = optimizer
         self.scheduler = scheduler
         self.loss_fn = loss_fn
-        self.device = device
+        
+        # Set device
+        if device is None:
+            self.device = get_device()
+        else:
+            self.device = device
+            
         self.max_epochs = max_epochs
         self.clip_grad_norm = clip_grad_norm
         self.save_every = save_every
@@ -88,6 +97,11 @@ class Trainer:
         self.mixed_precision = mixed_precision
         self.progress_fn = progress_fn
         
+        # Progress callbacks
+        self.on_epoch_start_callback = None
+        self.on_batch_end_callback = None
+        self.on_epoch_end_callback = None
+        
         # Set up model and optimizer
         self.model = self.model.to(self.device)
         
@@ -96,8 +110,13 @@ class Trainer:
             
         # Set up mixed precision training if enabled
         self.scaler = None
-        if self.mixed_precision and torch.cuda.is_available():
-            self.scaler = torch.cuda.amp.GradScaler()
+        if self.mixed_precision:
+            # MPS doesn't support amp yet, so only enable for CUDA
+            if self.device.type == 'cuda':
+                self.scaler = torch.cuda.amp.GradScaler()
+            else:
+                logger.warning("Mixed precision training is only supported on CUDA devices. Disabling.")
+                self.mixed_precision = False
         
         # Set up output directory
         self.output_dir = os.path.join(output_dir, experiment_name)
@@ -132,6 +151,22 @@ class Trainer:
         """Count number of trainable parameters in the model."""
         return sum(p.numel() for p in self.model.parameters() if p.requires_grad)
     
+    def set_progress_callback(self, 
+                             on_epoch_start: Optional[Callable] = None, 
+                             on_batch_end: Optional[Callable] = None,
+                             on_epoch_end: Optional[Callable] = None):
+        """
+        Set callbacks for progress reporting.
+        
+        Args:
+            on_epoch_start: Called at the start of each epoch with epoch number
+            on_batch_end: Called after each batch with batch_idx, num_batches, loss
+            on_epoch_end: Called at the end of each epoch with train_loss and val_loss
+        """
+        self.on_epoch_start_callback = on_epoch_start
+        self.on_batch_end_callback = on_batch_end
+        self.on_epoch_end_callback = on_epoch_end
+    
     def train(self) -> Dict[str, List[float]]:
         """
         Train the model.
@@ -144,9 +179,16 @@ class Trainer:
         start_time = time.time()
         
         for epoch in range(self.start_epoch, self.max_epochs):
+            # Call epoch start callback
+            if self.on_epoch_start_callback:
+                self.on_epoch_start_callback(epoch)
+                
             # Training epoch
             train_metrics = self._train_epoch(epoch)
             self.train_loss_history.append(train_metrics["loss"])
+            
+            # Validation metrics (if available)
+            val_metrics = None
             
             # Validation if needed
             if self.val_loader is not None and (epoch + 1) % self.val_every == 0:
@@ -173,6 +215,11 @@ class Trainer:
                 if self.save_best and current_loss < self.best_val_loss:
                     self.best_val_loss = current_loss
                     self._save_checkpoint(epoch, is_best=True)
+            
+            # Call epoch end callback
+            if self.on_epoch_end_callback:
+                val_loss = val_metrics["loss"] if val_metrics else None
+                self.on_epoch_end_callback(train_metrics["loss"], val_loss)
                     
             # Save checkpoint periodically
             if (epoch + 1) % self.save_every == 0:
@@ -200,13 +247,15 @@ class Trainer:
         total_time = time.time() - start_time
         logger.info(f"Training completed in {total_time:.2f}s ({total_time/60:.2f}m)")
         
-        # Return training history
-        return {
+        # Return metrics history
+        metrics_history = {
             "train_loss": self.train_loss_history,
-            "val_loss": self.val_loss_history,
+            "val_loss": self.val_loss_history if self.val_loader is not None else [],
             "learning_rates": self.learning_rates
         }
-    
+        
+        return metrics_history
+
     def _train_epoch(self, epoch: int) -> Dict[str, float]:
         """
         Train for one epoch.
@@ -215,127 +264,102 @@ class Trainer:
             epoch: Current epoch number
             
         Returns:
-            Dictionary of training metrics
+            Dictionary of training metrics for the epoch
         """
         self.model.train()
         
-        epoch_loss = 0.0
-        epoch_metrics = {}
-        num_batches = len(self.train_loader)
-        epoch_start_time = time.time()
+        # Track metrics
+        total_loss = 0.0
+        samples_count = 0
         
+        # Set up progress tracking
+        start_time = time.time()
+        num_batches = len(self.train_loader)
+        
+        # Iterate over batches
         for batch_idx, batch in enumerate(self.train_loader):
-            # Move batch to device
-            if isinstance(batch, dict):
-                # Dict-style batch
-                for k, v in batch.items():
-                    if isinstance(v, torch.Tensor):
-                        batch[k] = v.to(self.device)
-                
-                # Get inputs and targets
-                inputs_2d = batch.get("keypoints_2d")
-                targets_3d = batch.get("keypoints_3d")
-            else:
-                # Tuple-style batch
-                inputs_2d, targets_3d = batch
-                inputs_2d = inputs_2d.to(self.device)
-                targets_3d = targets_3d.to(self.device)
+            # Move data to device
+            inputs = batch["input"].to(self.device)
+            targets = batch["target"].to(self.device) if "target" in batch else None
             
-            # Reset gradients
+            # Zero gradients
             self.optimizer.zero_grad()
             
             # Forward pass with mixed precision if enabled
-            if self.mixed_precision and self.scaler is not None:
+            if self.mixed_precision and self.device.type == 'cuda':
                 with torch.cuda.amp.autocast():
-                    outputs = self.model(inputs_2d, targets_3d)
+                    outputs = self.model(inputs, targets) if targets is not None else self.model(inputs)
                     
                     if self.loss_fn is not None:
-                        loss, loss_components = self.loss_fn(outputs["pred_3d"], targets_3d)
+                        loss = self.loss_fn(outputs, targets)
                     else:
-                        # Use model's loss if no external loss function
-                        loss = outputs["total_loss"]
-                        loss_components = {k: v for k, v in outputs.items() if "loss" in k}
+                        # If no loss function is provided, use the model's computed loss
+                        loss = outputs["total_loss"] if "total_loss" in outputs else outputs["loss"]
                 
-                # Backward pass with gradient scaling
+                # Backward pass with scaler
                 self.scaler.scale(loss).backward()
                 
-                # Clip gradients if needed
+                # Gradient clipping if enabled
                 if self.clip_grad_norm is not None:
                     self.scaler.unscale_(self.optimizer)
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_grad_norm)
                 
-                # Update parameters
+                # Optimizer step with scaler
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
             else:
                 # Standard forward pass
-                outputs = self.model(inputs_2d, targets_3d)
+                outputs = self.model(inputs, targets) if targets is not None else self.model(inputs)
                 
                 if self.loss_fn is not None:
-                    loss, loss_components = self.loss_fn(outputs["pred_3d"], targets_3d)
+                    loss = self.loss_fn(outputs, targets)
                 else:
-                    # Use model's loss if no external loss function
-                    loss = outputs["total_loss"]
-                    loss_components = {k: v for k, v in outputs.items() if "loss" in k}
+                    # If no loss function is provided, use the model's computed loss
+                    loss = outputs["total_loss"] if "total_loss" in outputs else outputs["loss"]
                 
                 # Backward pass
                 loss.backward()
                 
-                # Clip gradients if needed
+                # Gradient clipping if enabled
                 if self.clip_grad_norm is not None:
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_grad_norm)
                 
-                # Update parameters
+                # Optimizer step
                 self.optimizer.step()
             
             # Update metrics
-            epoch_loss += loss.item()
-            self.global_step += 1
+            batch_size = inputs.size(0)
+            samples_count += batch_size
+            total_loss += loss.item() * batch_size
             
-            # Accumulate loss components
-            for k, v in loss_components.items():
-                if isinstance(v, torch.Tensor):
-                    v = v.item()
-                epoch_metrics[k] = epoch_metrics.get(k, 0.0) + v
-            
-            # Log progress
+            # Log batch metrics
             if batch_idx % self.log_every == 0:
-                batch_time = time.time() - epoch_start_time
-                examples_per_sec = (batch_idx + 1) * self.train_loader.batch_size / batch_time
-                
-                log_msg = (f"Epoch: {epoch+1}/{self.max_epochs} "
-                          f"[{batch_idx+1}/{num_batches} ({100. * (batch_idx+1) / num_batches:.0f}%)] "
-                          f"Loss: {loss.item():.4f} "
-                          f"LR: {self.optimizer.param_groups[0]['lr']:.6f} "
-                          f"Examples/sec: {examples_per_sec:.1f}")
-                
-                logger.info(log_msg)
-                
-            # Update progress display if provided
-            if self.progress_fn is not None:
-                progress = {
-                    "epoch": epoch + 1,
-                    "max_epochs": self.max_epochs,
-                    "batch": batch_idx + 1,
-                    "num_batches": num_batches,
-                    "loss": loss.item(),
-                    "lr": self.optimizer.param_groups[0]['lr'],
-                    "examples_per_sec": (batch_idx + 1) * self.train_loader.batch_size / (time.time() - epoch_start_time)
-                }
-                self.progress_fn(progress)
-        
-        # Calculate average metrics
-        epoch_loss /= num_batches
-        for k in epoch_metrics.keys():
-            epoch_metrics[k] /= num_batches
+                batch_time = time.time() - start_time
+                logger.info(f"Epoch {epoch+1}/{self.max_epochs} [{batch_idx}/{len(self.train_loader)}] "
+                           f"Loss: {loss.item():.4f} Time: {batch_time:.2f}s")
+                start_time = time.time()
             
-        # Log epoch summary
-        epoch_time = time.time() - epoch_start_time
-        logger.info(f"Epoch {epoch+1} completed in {epoch_time:.2f}s - Train loss: {epoch_loss:.4f}")
+            # Call batch end callback
+            if self.on_batch_end_callback:
+                self.on_batch_end_callback(batch_idx, num_batches, loss.item())
+                
+            # Update progress if function provided
+            if self.progress_fn is not None:
+                progress = (epoch + batch_idx / len(self.train_loader)) / self.max_epochs
+                self.progress_fn(progress)
+                
+            # Update global step
+            self.global_step += 1
         
-        epoch_metrics["loss"] = epoch_loss
-        return epoch_metrics
-    
+        # Calculate epoch metrics
+        avg_loss = total_loss / samples_count if samples_count > 0 else 0.0
+        
+        # Log epoch metrics
+        logger.info(f"Epoch {epoch+1}/{self.max_epochs} Training - Loss: {avg_loss:.4f}")
+        
+        # Return metrics
+        return {"loss": avg_loss}
+
     def _validate(self, epoch: int) -> Dict[str, float]:
         """
         Validate the model.
@@ -346,68 +370,43 @@ class Trainer:
         Returns:
             Dictionary of validation metrics
         """
-        if self.val_loader is None:
-            return {"loss": float('inf')}
-            
         self.model.eval()
         
-        val_loss = 0.0
-        val_metrics = {}
-        num_batches = len(self.val_loader)
-        val_start_time = time.time()
+        # Track metrics
+        total_loss = 0.0
+        samples_count = 0
         
+        # Disable gradients for validation
         with torch.no_grad():
             for batch in self.val_loader:
-                # Move batch to device
-                if isinstance(batch, dict):
-                    # Dict-style batch
-                    for k, v in batch.items():
-                        if isinstance(v, torch.Tensor):
-                            batch[k] = v.to(self.device)
-                    
-                    # Get inputs and targets
-                    inputs_2d = batch.get("keypoints_2d")
-                    targets_3d = batch.get("keypoints_3d")
-                else:
-                    # Tuple-style batch
-                    inputs_2d, targets_3d = batch
-                    inputs_2d = inputs_2d.to(self.device)
-                    targets_3d = targets_3d.to(self.device)
+                # Move data to device
+                inputs = batch["input"].to(self.device)
+                targets = batch["target"].to(self.device) if "target" in batch else None
                 
                 # Forward pass
-                outputs = self.model(inputs_2d, targets_3d)
+                outputs = self.model(inputs, targets) if targets is not None else self.model(inputs)
                 
                 # Calculate loss
                 if self.loss_fn is not None:
-                    loss, loss_components = self.loss_fn(outputs["pred_3d"], targets_3d)
+                    loss = self.loss_fn(outputs, targets)
                 else:
-                    # Use model's loss if no external loss function
-                    loss = outputs["total_loss"]
-                    loss_components = {k: v for k, v in outputs.items() if "loss" in k}
+                    # If no loss function is provided, use the model's computed loss
+                    loss = outputs["total_loss"] if "total_loss" in outputs else outputs["loss"]
                 
                 # Update metrics
-                val_loss += loss.item()
-                
-                # Accumulate loss components
-                for k, v in loss_components.items():
-                    if isinstance(v, torch.Tensor):
-                        v = v.item()
-                    val_metrics[k] = val_metrics.get(k, 0.0) + v
+                batch_size = inputs.size(0)
+                samples_count += batch_size
+                total_loss += loss.item() * batch_size
         
-        # Calculate average metrics
-        val_loss /= num_batches
-        for k in val_metrics.keys():
-            val_metrics[k] /= num_batches
-            
-        # Calculate validation time
-        val_time = time.time() - val_start_time
+        # Calculate validation metrics
+        avg_loss = total_loss / samples_count if samples_count > 0 else 0.0
         
-        # Log validation summary
-        logger.info(f"Epoch {epoch+1} validation completed in {val_time:.2f}s - Val loss: {val_loss:.4f}")
+        # Log validation metrics
+        logger.info(f"Epoch {epoch+1}/{self.max_epochs} Validation - Loss: {avg_loss:.4f}")
         
-        val_metrics["loss"] = val_loss
-        return val_metrics
-    
+        # Return metrics
+        return {"loss": avg_loss}
+
     def _save_checkpoint(self, epoch: int, is_best: bool = False, is_final: bool = False) -> None:
         """
         Save model checkpoint.
@@ -417,38 +416,36 @@ class Trainer:
             is_best: Whether this is the best model so far
             is_final: Whether this is the final model
         """
-        # Prepare checkpoint
+        # Create checkpoint dictionary
         checkpoint = {
             "epoch": epoch + 1,
             "model_state_dict": self.model.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
             "best_val_loss": self.best_val_loss,
-            "global_step": self.global_step,
-            "train_loss_history": self.train_loss_history,
-            "val_loss_history": self.val_loss_history,
-            "learning_rates": self.learning_rates
+            "global_step": self.global_step
         }
         
         if self.scheduler is not None:
             checkpoint["scheduler_state_dict"] = self.scheduler.state_dict()
             
-        if self.scaler is not None:
-            checkpoint["scaler_state_dict"] = self.scaler.state_dict()
-            
         # Save regular checkpoint
-        checkpoint_path = os.path.join(self.checkpoint_dir, f"checkpoint_epoch_{epoch+1}.pt")
-        torch.save(checkpoint, checkpoint_path)
-        
-        # Save best model if needed
+        if not is_best and not is_final:
+            checkpoint_path = os.path.join(self.checkpoint_dir, f"checkpoint_epoch_{epoch+1}.pt")
+            torch.save(checkpoint, checkpoint_path)
+            logger.debug(f"Saved checkpoint to {checkpoint_path}")
+            
+        # Save best model
         if is_best:
-            best_path = os.path.join(self.output_dir, "best_model.pt")
-            torch.save(checkpoint, best_path)
+            best_model_path = os.path.join(self.output_dir, "best_model.pt")
+            torch.save(checkpoint, best_model_path)
+            logger.debug(f"Saved best model to {best_model_path}")
             
-        # Save final model if needed
+        # Save final model
         if is_final:
-            final_path = os.path.join(self.output_dir, "final_model.pt")
-            torch.save(checkpoint, final_path)
-            
+            final_model_path = os.path.join(self.output_dir, "final_model.pt")
+            torch.save(checkpoint, final_model_path)
+            logger.debug(f"Saved final model to {final_model_path}")
+
     def _load_checkpoint(self, checkpoint_path: str) -> None:
         """
         Load model checkpoint.
@@ -458,7 +455,12 @@ class Trainer:
         """
         logger.info(f"Loading checkpoint from {checkpoint_path}")
         
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        # Check if file exists
+        if not os.path.isfile(checkpoint_path):
+            raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
+            
+        # Load checkpoint on CPU
+        checkpoint = torch.load(checkpoint_path, map_location="cpu")
         
         # Load model state
         self.model.load_state_dict(checkpoint["model_state_dict"])
@@ -466,29 +468,26 @@ class Trainer:
         # Load optimizer state
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         
-        # Load scheduler state if available
-        if self.scheduler is not None and "scheduler_state_dict" in checkpoint:
+        # Move optimizer state to correct device
+        for state in self.optimizer.state.values():
+            for k, v in state.items():
+                if isinstance(v, torch.Tensor):
+                    state[k] = v.to(self.device)
+        
+        # Load scheduler state if present
+        if "scheduler_state_dict" in checkpoint and self.scheduler is not None:
             self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
             
-        # Load scaler state if available
-        if self.scaler is not None and "scaler_state_dict" in checkpoint:
-            self.scaler.load_state_dict(checkpoint["scaler_state_dict"])
-        
-        # Restore training state
+        # Load training state
         self.start_epoch = checkpoint["epoch"]
         self.best_val_loss = checkpoint["best_val_loss"]
         self.global_step = checkpoint.get("global_step", 0)
         
-        # Restore history
-        self.train_loss_history = checkpoint.get("train_loss_history", [])
-        self.val_loss_history = checkpoint.get("val_loss_history", [])
-        self.learning_rates = checkpoint.get("learning_rates", [])
-        
-        logger.info(f"Resuming training from epoch {self.start_epoch}")
-    
+        logger.info(f"Loaded checkpoint from epoch {self.start_epoch}")
+
     def evaluate(self, test_loader: DataLoader) -> Dict[str, float]:
         """
-        Evaluate the model on test data.
+        Evaluate model on test data.
         
         Args:
             test_loader: DataLoader for test data
@@ -498,76 +497,64 @@ class Trainer:
         """
         self.model.eval()
         
-        test_loss = 0.0
-        test_metrics = {}
-        predictions = []
-        targets = []
+        # Track metrics
+        total_loss = 0.0
+        samples_count = 0
         
+        # Additional metrics
+        total_pred_errors = 0.0
+        
+        # Disable gradients for evaluation
         with torch.no_grad():
             for batch in test_loader:
-                # Move batch to device
-                if isinstance(batch, dict):
-                    # Dict-style batch
-                    for k, v in batch.items():
-                        if isinstance(v, torch.Tensor):
-                            batch[k] = v.to(self.device)
-                    
-                    # Get inputs and targets
-                    inputs_2d = batch.get("keypoints_2d")
-                    targets_3d = batch.get("keypoints_3d")
-                else:
-                    # Tuple-style batch
-                    inputs_2d, targets_3d = batch
-                    inputs_2d = inputs_2d.to(self.device)
-                    if targets_3d is not None:
-                        targets_3d = targets_3d.to(self.device)
+                # Move data to device
+                inputs = batch["input"].to(self.device)
+                targets = batch["target"].to(self.device) if "target" in batch else None
                 
                 # Forward pass
-                outputs = self.model(inputs_2d, targets_3d)
-                pred_3d = outputs["pred_3d"]
+                outputs = self.model(inputs, targets) if targets is not None else self.model(inputs)
                 
-                # Calculate loss if targets are available
-                if targets_3d is not None:
-                    if self.loss_fn is not None:
-                        loss, loss_components = self.loss_fn(pred_3d, targets_3d)
-                    else:
-                        # Use model's loss if no external loss function
-                        loss = outputs["total_loss"]
-                        loss_components = {k: v for k, v in outputs.items() if "loss" in k}
-                    
-                    # Update metrics
-                    test_loss += loss.item()
-                    
-                    # Accumulate loss components
-                    for k, v in loss_components.items():
-                        if isinstance(v, torch.Tensor):
-                            v = v.item()
-                        test_metrics[k] = test_metrics.get(k, 0.0) + v
+                # Get predictions
+                if isinstance(outputs, dict):
+                    predictions = outputs.get("pred", outputs.get("pred_3d", None))
+                else:
+                    predictions = outputs
                 
-                # Save predictions and targets for further analysis
-                predictions.append(pred_3d.cpu().numpy())
-                if targets_3d is not None:
-                    targets.append(targets_3d.cpu().numpy())
+                # Calculate loss
+                if self.loss_fn is not None:
+                    loss = self.loss_fn(outputs, targets)
+                elif "total_loss" in outputs:
+                    loss = outputs["total_loss"]
+                elif "loss" in outputs:
+                    loss = outputs["loss"]
+                else:
+                    # Fallback to mean squared error
+                    loss = torch.nn.functional.mse_loss(predictions, targets)
+                
+                # Calculate prediction error
+                if targets is not None and predictions is not None:
+                    pred_error = torch.mean(torch.norm(predictions - targets, dim=-1))
+                    total_pred_errors += pred_error.item() * inputs.size(0)
+                
+                # Update metrics
+                batch_size = inputs.size(0)
+                samples_count += batch_size
+                total_loss += loss.item() * batch_size
         
-        # Calculate average metrics
-        num_batches = len(test_loader)
-        test_loss /= num_batches
-        for k in test_metrics.keys():
-            test_metrics[k] /= num_batches
-            
-        # Combine predictions and targets
-        predictions = np.concatenate(predictions, axis=0)
-        if targets:
-            targets = np.concatenate(targets, axis=0)
-            
-            # Calculate MPJPE (Mean Per Joint Position Error)
-            joint_error = np.mean(np.sqrt(np.sum((predictions - targets) ** 2, axis=-1)))
-            test_metrics["mpjpe"] = joint_error
+        # Calculate test metrics
+        avg_loss = total_loss / samples_count if samples_count > 0 else 0.0
+        avg_pred_error = total_pred_errors / samples_count if samples_count > 0 else 0.0
         
-        test_metrics["loss"] = test_loss
-        logger.info(f"Evaluation completed - Test loss: {test_loss:.4f}")
+        # Log test metrics
+        logger.info(f"Test - Loss: {avg_loss:.4f}, Prediction Error: {avg_pred_error:.4f}")
         
-        return test_metrics
+        # Return metrics
+        metrics = {
+            "loss": avg_loss,
+            "prediction_error": avg_pred_error
+        }
+        
+        return metrics
 
 
 def get_optimizer(model: nn.Module, config: Dict[str, Any]) -> torch.optim.Optimizer:
@@ -581,25 +568,29 @@ def get_optimizer(model: nn.Module, config: Dict[str, Any]) -> torch.optim.Optim
     Returns:
         PyTorch optimizer
     """
-    optim_config = config.get("optimizer", {})
-    optim_type = optim_config.get("type", "adam").lower()
-    lr = optim_config.get("lr", 1e-3)
-    weight_decay = optim_config.get("weight_decay", 0.0)
+    optimizer_config = config.get("optimizer", {})
     
-    if optim_type == "adam":
-        betas = optim_config.get("betas", (0.9, 0.999))
-        eps = optim_config.get("eps", 1e-8)
-        return optim.Adam(model.parameters(), lr=lr, betas=betas, eps=eps, weight_decay=weight_decay)
-    elif optim_type == "adamw":
-        betas = optim_config.get("betas", (0.9, 0.999))
-        eps = optim_config.get("eps", 1e-8)
-        return optim.AdamW(model.parameters(), lr=lr, betas=betas, eps=eps, weight_decay=weight_decay)
-    elif optim_type == "sgd":
-        momentum = optim_config.get("momentum", 0.9)
-        nesterov = optim_config.get("nesterov", False)
-        return optim.SGD(model.parameters(), lr=lr, momentum=momentum, nesterov=nesterov, weight_decay=weight_decay)
+    optimizer_type = optimizer_config.get("type", "adam").lower()
+    lr = optimizer_config.get("learning_rate", 1e-3)
+    weight_decay = optimizer_config.get("weight_decay", 0.0)
+    
+    if optimizer_type == "sgd":
+        momentum = optimizer_config.get("momentum", 0.9)
+        nesterov = optimizer_config.get("nesterov", False)
+        return optim.SGD(model.parameters(), lr=lr, momentum=momentum, 
+                         weight_decay=weight_decay, nesterov=nesterov)
+    elif optimizer_type == "adam":
+        beta1 = optimizer_config.get("beta1", 0.9)
+        beta2 = optimizer_config.get("beta2", 0.999)
+        return optim.Adam(model.parameters(), lr=lr, betas=(beta1, beta2), 
+                          weight_decay=weight_decay)
+    elif optimizer_type == "adamw":
+        beta1 = optimizer_config.get("beta1", 0.9)
+        beta2 = optimizer_config.get("beta2", 0.999)
+        return optim.AdamW(model.parameters(), lr=lr, betas=(beta1, beta2), 
+                           weight_decay=weight_decay)
     else:
-        raise ValueError(f"Unsupported optimizer type: {optim_type}")
+        raise ValueError(f"Unsupported optimizer type: {optimizer_type}")
 
 
 def get_scheduler(optimizer: torch.optim.Optimizer, config: Dict[str, Any]) -> Optional[torch.optim.lr_scheduler._LRScheduler]:
@@ -611,15 +602,15 @@ def get_scheduler(optimizer: torch.optim.Optimizer, config: Dict[str, Any]) -> O
         config: Configuration dictionary
         
     Returns:
-        PyTorch learning rate scheduler
+        PyTorch learning rate scheduler or None
     """
-    scheduler_config = config.get("scheduler", {})
-    scheduler_type = scheduler_config.get("type", None)
+    train_config = config.get("training", {})
+    scheduler_config = train_config.get("lr_scheduler", {})
     
-    if scheduler_type is None:
+    if "type" not in scheduler_config:
         return None
         
-    scheduler_type = scheduler_type.lower()
+    scheduler_type = scheduler_config["type"].lower()
     
     if scheduler_type == "step":
         step_size = scheduler_config.get("step_size", 30)
@@ -629,17 +620,37 @@ def get_scheduler(optimizer: torch.optim.Optimizer, config: Dict[str, Any]) -> O
         milestones = scheduler_config.get("milestones", [30, 60, 90])
         gamma = scheduler_config.get("gamma", 0.1)
         return optim.lr_scheduler.MultiStepLR(optimizer, milestones=milestones, gamma=gamma)
-    elif scheduler_type == "cosine":
-        T_max = scheduler_config.get("T_max", 100)
-        eta_min = scheduler_config.get("eta_min", 0)
-        return optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=T_max, eta_min=eta_min)
     elif scheduler_type == "plateau":
-        factor = scheduler_config.get("factor", 0.1)
         patience = scheduler_config.get("patience", 10)
-        threshold = scheduler_config.get("threshold", 1e-4)
-        return optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode='min', factor=factor, patience=patience, threshold=threshold
-        )
+        factor = scheduler_config.get("factor", 0.1)
+        return optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", 
+                                                 patience=patience, factor=factor)
+    elif scheduler_type == "cosine":
+        epochs = train_config.get("epochs", 100)
+        warmup_epochs = scheduler_config.get("warmup_epochs", 0)
+        eta_min = scheduler_config.get("eta_min", 0)
+        
+        if warmup_epochs > 0:
+            # Create warmup + cosine annealing scheduler
+            warmup_scheduler = optim.lr_scheduler.LinearLR(
+                optimizer,
+                start_factor=0.1,
+                end_factor=1.0,
+                total_iters=warmup_epochs
+            )
+            cosine_scheduler = optim.lr_scheduler.CosineAnnealingLR(
+                optimizer,
+                T_max=epochs - warmup_epochs,
+                eta_min=eta_min
+            )
+            return optim.lr_scheduler.SequentialLR(
+                optimizer,
+                schedulers=[warmup_scheduler, cosine_scheduler],
+                milestones=[warmup_epochs]
+            )
+        else:
+            # Create basic cosine annealing scheduler
+            return optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=eta_min)
     else:
         raise ValueError(f"Unsupported scheduler type: {scheduler_type}")
 

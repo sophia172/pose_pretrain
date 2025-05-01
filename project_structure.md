@@ -9,7 +9,8 @@ pretrain/                          # Project root directory
 │   ├── config.yaml                # Main configuration
 │   ├── models/                    # Model-specific configs
 │   │   ├── pretrain_model1.yaml
-│   │   └── pretrain_model2.yaml
+│   │   ├── pretrain_model2.yaml
+│   │   └── pretrain_vit.yaml      # Vision Transformer config
 │   └── data/                      # Dataset configs
 │       ├── h36m.yaml
 │       └── mpi_inf_3dhp.yaml
@@ -29,9 +30,11 @@ pretrain/                          # Project root directory
 │   │   ├── __init__.py
 │   │   ├── components/            # Reusable model components
 │   │   │   ├── __init__.py
-│   │   │   ├── attention.py
-│   │   │   └── encoders.py
-│   │   ├── pretrain_model.py      # Pretraining model architecture
+│   │   │   ├── attention.py       # Attention mechanisms
+│   │   │   ├── encoders.py        # Encoder/decoder components
+│   │   │   └── vision_transformer.py # Vision Transformer components
+│   │   ├── pretrain_model.py      # Standard pretraining model
+│   │   ├── pretrain_vit_model.py  # Vision Transformer model
 │   │   └── loss.py                # Loss functions
 │   │
 │   ├── trainers/                  # Training logic
@@ -82,7 +85,10 @@ pretrain/                          # Project root directory
 2. **Model Architecture**
    - Modular architecture with reusable components
    - Configuration-driven model creation
-   - Support for different model variations
+   - Support for different model variations:
+     - Standard transformer-based model
+     - Vision Transformer (ViT) for keypoint mapping
+     - Various input/output dimension configurations (2D-3D, 2D-2D, 3D-3D)
 
 3. **Training Infrastructure**
    - Robust logging and experiment tracking

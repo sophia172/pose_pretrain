@@ -6,6 +6,13 @@ A production-level ML system for unsupervised pretraining of Human Pose Estimati
 
 This project implements a transformer-based model architecture for learning the mapping between 2D pose keypoints and 3D pose representations in an unsupervised manner. The system is designed with a focus on modularity, configurability, and production-ready practices.
 
+## System Requirements
+
+- Python 3.8+
+- PyTorch 1.12+ (required for Apple Silicon MPS support)
+- CUDA-compatible GPU (optional for faster training)
+- Apple Silicon M-series chip (optional, supported via MPS backend)
+
 ## Code Architecture
 
 ```
@@ -13,7 +20,8 @@ pretrain/                          # Project root directory
 ├── config/                        # Configuration files
 │   ├── config.yaml                # Main configuration
 │   ├── models/                    # Model-specific configs
-│   │   └── pretrain_model1.yaml   # Transformer model config
+│   │   ├── pretrain_model1.yaml   # Transformer model config
+│   │   └── pretrain_vit.yaml      # Vision Transformer model config
 │   └── data/                      # Dataset configs
 │       └── h36m.yaml              # Human3.6M dataset config
 │
@@ -27,14 +35,17 @@ pretrain/                          # Project root directory
 │   ├── models/                    # ML model architecture
 │   │   ├── components/            # Reusable model components
 │   │   │   ├── attention.py       # Attention mechanisms
-│   │   │   └── encoders.py        # Encoder/decoder modules
+│   │   │   ├── encoders.py        # Encoder/decoder modules
+│   │   │   └── vision_transformer.py # Vision Transformer components
 │   │   ├── pretrain_model.py      # Main pretraining model
+│   │   ├── pretrain_vit_model.py  # Vision Transformer-based model
 │   │   └── loss.py                # Loss functions
 │   │
 │   ├── trainers/                  # Training logic
 │   │   └── trainer.py             # Trainer implementation
 │   │
 │   ├── utils/                     # Utilities
+│   │   ├── device.py              # Device detection and configuration
 │   │   ├── logger.py              # Logging utilities
 │   │   └── visualization.py       # Visualization tools
 │   │
@@ -59,12 +70,18 @@ pretrain/                          # Project root directory
 - **Encoder**: Transformer-based architecture converting 2D keypoints to latent representations
 - **Decoder**: Transforms latent representations to 3D poses
 - **Attention Mechanisms**: Multi-head attention with joint relation modeling
+- **Vision Transformer**: Specialized ViT architecture for keypoint-to-keypoint mapping (2D-2D, 3D-3D, 2D-3D)
 - **Loss Functions**: Modular losses including reconstruction, limb consistency, and temporal smoothness
 
 ### Training Layer
 - **Trainer**: Handles training loop, validation, checkpointing, and early stopping
 - **Optimizer & Scheduler**: Multiple optimization strategies and learning rate schedules
 - **Mixed Precision**: Support for faster training with mixed precision
+
+### Hardware Acceleration
+- **Multi-architecture Support**: Automatic device detection for CUDA, MPS (Apple Silicon), or CPU
+- **Apple Silicon Support**: Optimized performance on M-series chips using Metal Performance Shaders (MPS)
+- **Graceful Fallbacks**: Automatically disables unsupported features (like mixed precision on MPS)
 
 ### Inference Layer
 - **Model Loading**: Utilities for loading trained models
@@ -82,6 +99,26 @@ pretrain/                          # Project root directory
 3. **Configurable**: Extensive configuration options without code changes
 4. **Efficient Data Pipeline**: Caching, parallel loading, and precomputed statistics
 5. **Visualization Tools**: Comprehensive visualization for model outputs
+6. **Multiple Model Architectures**: Support for both standard Transformer and Vision Transformer models
+7. **Cross-Platform Hardware Support**: Runs on NVIDIA GPUs and Apple Silicon M-series chips
+8. **Portable Import Structure**: Relative imports ensure code works regardless of project location
+
+## Import Structure
+
+The project uses a modular import structure that makes it portable and easy to understand:
+
+- **Relative Imports**: All internal imports use relative paths (e.g., `from .datasets import Human36MDataset`)
+- **Module Organization**: Components are organized into logical modules that can be imported independently
+- **Path Independence**: The codebase automatically adapts to its location with no hardcoded paths
+
+## Progress Tracking
+
+The system provides rich visual feedback during training:
+
+- **Colorful Console Output**: Uses ANSI colors for better readability
+- **Progress Bars**: Visual indicators for epoch and batch progress
+- **Training Statistics**: Real-time loss values and metrics
+- **Device Information**: Automatic detection and display of available hardware
 
 ## Workflow Guide
 
@@ -112,6 +149,11 @@ This section provides a comprehensive guide on how to run training, perform infe
 5. **Using a specific GPU:**
    ```bash
    python src/scripts/train.py --config config/config.yaml --gpu 1
+   ```
+
+6. **Training with Vision Transformer model:**
+   ```bash
+   python src/scripts/train.py --config config/pretrain_vit.yaml --model_type vit
    ```
 
 ### Running Inference
@@ -196,8 +238,8 @@ This section provides a comprehensive guide on how to run training, perform infe
    ```yaml
    # In config/config.yaml
    model:
-     name: "pretrain_model2"  # Change model name
-     config_file: "config/models/pretrain_model2.yaml"  # Update config path
+     name: "pretrain_vit"  # Change model name to use Vision Transformer
+     config_file: "config/models/pretrain_vit.yaml"  # Update config path
      # Update other model-specific parameters
    ```
 
@@ -244,30 +286,27 @@ This section provides a comprehensive guide on how to run training, perform infe
 
 ## Getting Started
 
-1. Install dependencies:
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/username/hpe-pretrain.git
+   cd hpe-pretrain
    ```
+
+2. **Install dependencies:**
+   ```bash
    pip install -r requirements.txt
    ```
 
-2. Configure your experiment:
-   ```
-   # Edit config/config.yaml with your settings
-   ```
-
-3. Train the model:
-   ```
-   python src/scripts/train.py --config config/config.yaml
+3. **Run a test training:**
+   ```bash
+   python src/scripts/train.py --config config/config.yaml --debug
    ```
 
-4. Run inference:
+4. **View device information:**
+   ```bash
+   python -c "from src.utils.device import print_device_info; print_device_info()"
    ```
-   python src/scripts/inference.py --checkpoint outputs/models/best_model.pt --input path/to/data
-   ```
 
-## Data Format
+## License
 
-The system works with Human3.6M dataset containing 2D and 3D keypoints stored in JSON files. Key data formats:
-
-- **Input**: 2D keypoints of shape (batch_size, num_joints, 2)
-- **Output**: 3D keypoints of shape (batch_size, num_joints, 3)
-- **Sequences**: Optional support for sequential data of shape (batch_size, seq_len, num_joints, dimension) 
+This project is licensed under the MIT License - see the LICENSE file for details. 

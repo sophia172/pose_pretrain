@@ -12,8 +12,8 @@ from typing import Dict, List, Optional, Tuple, Union, Any
 import torch
 from torch.utils.data import DataLoader, ConcatDataset
 
-from src.data.datasets import Human36MDataset
-from src.data.transforms import get_train_transforms, get_val_transforms
+from .datasets import Human36MDataset
+from .transforms import get_train_transforms, get_val_transforms
 
 logger = logging.getLogger(__name__)
 
