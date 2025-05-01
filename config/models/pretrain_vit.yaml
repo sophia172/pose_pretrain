@@ -1,0 +1,88 @@
+# Configuration for Vision Transformer pretraining model
+
+name: "pretrain_vit"
+description: "Vision Transformer-based pretraining model for keypoint mapping (2D-2D, 3D-3D, 2D-3D)"
+
+# Architecture
+architecture:
+  type: "vit"  # Vision Transformer
+  
+  # Input/Output dimensions (configurable for different tasks)
+  input_dim: 2  # 2D pose (can be changed to 3 for 3D pose input)
+  output_dim: 2  # 2D pose (can be changed to 3 for 3D pose output)
+  num_joints: 133
+  
+  # Vision Transformer settings
+  vit:
+    model_type: "keypoint2keypoint"  # Options: keypoint_vit, keypoint2keypoint
+    embed_dim: 256
+    encoder_depth: 6
+    decoder_depth: 6
+    num_heads: 8
+    mlp_ratio: 4
+    dropout: 0.1
+    attention_dropout: 0.1
+    use_positional_encoding: true
+    use_joint_relations: true
+    activation: "gelu"  # Options: relu, gelu, silu
+  
+  # Latent space
+  latent:
+    dim: 256
+    regularization: "none"  # Options: none, l1, l2, kl
+    
+  # Sequence modeling (if using temporal information)
+  sequence:
+    enabled: false
+    type: "transformer"
+    hidden_dim: 512
+    num_layers: 2
+    bidirectional: true
+
+# Training specifics for this model
+training:
+  batch_size: 64
+  learning_rate: 0.0001
+  weight_decay: 0.0001
+  
+  # Learning rate scheduler
+  lr_scheduler:
+    type: "cosine"
+    warmup_epochs: 5
+  
+  # Specialized losses
+  losses:
+    reconstruction:
+      weight: 1.0
+      type: "l1"
+    consistency:
+      weight: 0.5
+      type: "cosine"  # For consistency between different augmentations or views
+    smoothness:
+      weight: 0.1
+      type: "l1"  # Temporal smoothness loss
+  
+  # Data augmentation
+  augmentation:
+    enabled: true
+    jitter: 0.05  # Random jitter to keypoints
+    rotation: 15  # Random rotation (degrees)
+    flip: true  # Random horizontal flip
+    scale: 0.1  # Random scale
+
+# Initialization
+initialization:
+  type: "xavier"  # Options: normal, xavier, kaiming
+  gain: 1.0
+
+# Optimization settings
+optimizer:
+  type: "adamw"  # Options: sgd, adam, adamw
+  beta1: 0.9
+  beta2: 0.999
+  
+# Regularization
+regularization:
+  dropout: 0.1
+  weight_decay: 0.0001
+  gradient_clip: 1.0 
