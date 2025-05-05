@@ -161,7 +161,6 @@ def get_human36m_dataloaders(config: Dict[str, Any]) -> Tuple[DataLoader, Option
         stride=stride,
         verbose=config.get('experiment', {}).get('debug', False)
     )
-    
     # Create train dataloader
     train_loader = DataLoader(
         train_dataset,
@@ -172,7 +171,6 @@ def get_human36m_dataloaders(config: Dict[str, Any]) -> Tuple[DataLoader, Option
         drop_last=True,
         persistent_workers=num_workers > 0
     )
-    
     # Create validation dataset and loader if validation file is available
     val_loader = None
     if val_json_files:

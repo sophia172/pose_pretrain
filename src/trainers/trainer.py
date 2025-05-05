@@ -278,12 +278,16 @@ class Trainer:
         start_time = time.time()
         num_batches = len(self.train_loader)
         
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(f"Loaded train loader")
         # Iterate over batches
         for batch_idx, batch in enumerate(self.train_loader):
             # Move data to device
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(f"Batch {batch_idx} started")
+                
             inputs = batch["input"].to(self.device)
             targets = batch["target"].to(self.device) if "target" in batch else None
-            
             # Zero gradients
             self.optimizer.zero_grad()
             

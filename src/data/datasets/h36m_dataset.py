@@ -65,10 +65,7 @@ class Human36MDataset(Dataset):
         self.stride = stride
         self.verbose = verbose
         self.cache_size = cache_size
-        self.dataset_mean_std = dataset_mean_std
-        
-        # Configure logging
-        self._configure_logging(log_level)
+        self.dataset_mean_std = dataset_mean_std 
         
         # Map frame IDs to (file_idx, frame_idx) for retrieval
         self.frame_mapping = []
@@ -80,41 +77,22 @@ class Human36MDataset(Dataset):
         self.cache_hits = 0
         self.cache_misses = 0
         self.load_times = []
-        
         logger.info(f"Initializing dataset with {len(json_files)} JSON files")
         
         # Validate input files
         self._validate_files()
-        
         # Build frame mapping and preload if requested
         start_time = time.time()
         self._build_frame_mapping()
         logger.info(f"Built frame mapping with {len(self.frame_mapping)} samples in {time.time() - start_time:.2f}s")
-        
         # Apply stride to frame mapping (take every nth sequence)
         self.frame_mapping = self.frame_mapping[::self.stride]
-        
         # Preload data if requested
         if self.preload:
             start_time = time.time()
             self._preload_data()
             logger.info(f"Preloaded data in {time.time() - start_time:.2f}s")
-            
         logger.info(f"Dataset initialized with {len(self.frame_mapping)} sequences")
-        
-    def _configure_logging(self, log_level: str) -> None:
-        """Configure logger for this dataset instance."""
-        numeric_level = getattr(logging, log_level.upper(), None)
-        if not isinstance(numeric_level, int):
-            raise ValueError(f"Invalid log level: {log_level}")
-        
-        if not logger.handlers:  # Only configure if not already configured
-            handler = logging.StreamHandler()
-            formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-            handler.setFormatter(formatter)
-            logger.addHandler(handler)
-            
-        logger.setLevel(numeric_level)
         
     def _validate_files(self) -> None:
         """Validate that input files exist and are readable."""
@@ -364,12 +342,10 @@ class Human36MDataset(Dataset):
             if self.sequence_length > 1:
                 # Get data for first frame to determine frame IDs
                 data = self._load_frame_data(file_idx, start_frame_id)
-                
                 # Initialize sequence arrays
                 if self.keypoint_type == 'both':
                     # Extract keypoints for the first frame to determine shape
                     keypoints_2d_first, keypoints_3d_first = self._extract_keypoints(data)
-                    
                     seq_2d = np.zeros((self.sequence_length, *keypoints_2d_first.shape), dtype=np.float32)
                     seq_3d = np.zeros((self.sequence_length, *keypoints_3d_first.shape), dtype=np.float32)
                     
@@ -393,7 +369,8 @@ class Human36MDataset(Dataset):
                     
                     # Apply transform if provided
                     if self.transform:
-                        seq_2d, seq_3d = self.transform(seq_2d, seq_3d)
+                        seq_2d = self.transform(seq_2d)
+                        seq_3d = self.transform(seq_3d)
                     
                     # Convert to torch tensors
                     seq_2d = torch.from_numpy(seq_2d)
@@ -408,7 +385,6 @@ class Human36MDataset(Dataset):
                 else:  # '2d' or '3d'
                     # Extract keypoints for the first frame to determine shape
                     keypoints_first = self._extract_keypoints(data)
-                    
                     seq = np.zeros((self.sequence_length, *keypoints_first.shape), dtype=np.float32)
                     seq[0] = keypoints_first
                     
@@ -440,17 +416,14 @@ class Human36MDataset(Dataset):
             else:  # Single frame
                 # Load data
                 data = self._load_frame_data(file_idx, start_frame_id)
-                
                 # Extract keypoints
                 keypoints = self._extract_keypoints(data)
-                
                 # Apply transform if provided
                 if self.transform:
                     if isinstance(keypoints, tuple):
                         keypoints = tuple(self.transform(k) for k in keypoints)
                     else:
                         keypoints = self.transform(keypoints)
-                
                 # Convert to torch tensor
                 if isinstance(keypoints, tuple):
                     keypoints_2d, keypoints_3d = keypoints
@@ -477,17 +450,14 @@ class Human36MDataset(Dataset):
             # Log item fetch time if requested
             if self.verbose and idx % 1000 == 0:
                 fetch_time = time.time() - start_time
-                logger.debug(f"Fetched item {idx} in {fetch_time:.4f}s")
                 
                 # Log cache stats occasionally
                 if idx % 5000 == 0:
                     total = self.cache_hits + self.cache_misses
                     if total > 0:
                         hit_rate = self.cache_hits / total * 100
-                        logger.debug(f"Cache hit rate: {hit_rate:.1f}% ({self.cache_hits}/{total})")
                         if self.load_times:
                             avg_load_time = sum(self.load_times) / len(self.load_times)
-                            logger.debug(f"Average load time: {avg_load_time*1000:.2f}ms")
             
             return result
             

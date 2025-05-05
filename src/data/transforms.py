@@ -44,54 +44,37 @@ class Normalize:
     
     def __init__(
         self, 
-        mean_2d: Optional[np.ndarray] = None, 
-        std_2d: Optional[np.ndarray] = None,
-        mean_3d: Optional[np.ndarray] = None, 
-        std_3d: Optional[np.ndarray] = None
+        mean: Optional[np.ndarray] = None, 
+        std: Optional[np.ndarray] = None,
     ):
         """
         Initialize with normalization parameters.
         
         Args:
-            mean_2d: Mean of 2D keypoints, shape [num_joints, 2]
-            std_2d: Standard deviation of 2D keypoints, shape [num_joints, 2]
-            mean_3d: Mean of 3D keypoints, shape [num_joints, 3]
-            std_3d: Standard deviation of 3D keypoints, shape [num_joints, 3]
+            mean: Mean of 2D or 3D keypoints, shape [num_joints, 2/3]
+            std: Standard deviation of 2D or 3D keypoints, shape [num_joints, 2/3]
         """
-        self.mean_2d = mean_2d
-        self.std_2d = std_2d
-        self.mean_3d = mean_3d
-        self.std_3d = std_3d
+        self.mean = mean
+        self.std = std
         
         # Ensure std doesn't have zeros to avoid division by zero
-        if self.std_2d is not None:
-            self.std_2d = np.where(self.std_2d < 1e-6, 1.0, self.std_2d)
-        if self.std_3d is not None:
-            self.std_3d = np.where(self.std_3d < 1e-6, 1.0, self.std_3d)
+        if self.std is not None:
+            self.std = np.where(self.std < 1e-6, 1.0, self.std)
     
-    def __call__(self, keypoints_2d=None, keypoints_3d=None):
+    def __call__(self, keypoints=None):
         """
         Normalize keypoints.
         
         Args:
-            keypoints_2d: 2D keypoints, shape [..., num_joints, 2]
-            keypoints_3d: 3D keypoints, shape [..., num_joints, 3]
+            keypoints: 2D or 3D keypoints, shape [..., num_joints, 2/3]
             
         Returns:
             Normalized keypoints
         """
-        if keypoints_2d is not None and self.mean_2d is not None and self.std_2d is not None:
-            keypoints_2d = (keypoints_2d - self.mean_2d) / self.std_2d
+        if keypoints is not None and self.mean is not None and self.std is not None:
+            keypoints = (keypoints - self.mean) / self.std
             
-        if keypoints_3d is not None and self.mean_3d is not None and self.std_3d is not None:
-            keypoints_3d = (keypoints_3d - self.mean_3d) / self.std_3d
-            
-        if keypoints_2d is None:
-            return keypoints_3d
-        if keypoints_3d is None:
-            return keypoints_2d
-            
-        return keypoints_2d, keypoints_3d
+        return keypoints
 
 
 class RandomFlip:
@@ -109,59 +92,34 @@ class RandomFlip:
         self.probability = probability
         self.flip_indices = flip_indices
         
-    def __call__(self, keypoints_2d=None, keypoints_3d=None):
+    def __call__(self, keypoints=None):
         """
         Randomly flip keypoints.
         
         Args:
-            keypoints_2d: 2D keypoints, shape [..., num_joints, 2]
-            keypoints_3d: 3D keypoints, shape [..., num_joints, 3]
+            keypoints: 2D or 3D keypoints, shape [..., num_joints, 2/3]
             
         Returns:
             Flipped keypoints
         """
         # Determine if we should flip
         if np.random.random() >= self.probability:
-            if keypoints_2d is None:
-                return keypoints_3d
-            if keypoints_3d is None:
-                return keypoints_2d
-            return keypoints_2d, keypoints_3d
+            return keypoints
             
         # Flip 2D keypoints
-        if keypoints_2d is not None:
+        if keypoints is not None:
             # Get a copy to avoid modifying the original
-            keypoints_2d = keypoints_2d.copy()
+            keypoints = keypoints.copy()
             
             # Flip x coordinates
-            keypoints_2d[..., 0] = -keypoints_2d[..., 0]
+            keypoints[..., 0] = -keypoints[..., 0]
             
             # Swap left and right joints if flip indices are provided
             if self.flip_indices is not None:
                 for left_idx, right_idx in self.flip_indices:
-                    keypoints_2d[..., left_idx, :], keypoints_2d[..., right_idx, :] = \
-                        keypoints_2d[..., right_idx, :].copy(), keypoints_2d[..., left_idx, :].copy()
-        
-        # Flip 3D keypoints
-        if keypoints_3d is not None:
-            # Get a copy to avoid modifying the original
-            keypoints_3d = keypoints_3d.copy()
-            
-            # Flip x coordinates
-            keypoints_3d[..., 0] = -keypoints_3d[..., 0]
-            
-            # Swap left and right joints if flip indices are provided
-            if self.flip_indices is not None:
-                for left_idx, right_idx in self.flip_indices:
-                    keypoints_3d[..., left_idx, :], keypoints_3d[..., right_idx, :] = \
-                        keypoints_3d[..., right_idx, :].copy(), keypoints_3d[..., left_idx, :].copy()
-        
-        if keypoints_2d is None:
-            return keypoints_3d
-        if keypoints_3d is None:
-            return keypoints_2d
-            
-        return keypoints_2d, keypoints_3d
+                    keypoints[..., left_idx, :], keypoints[..., right_idx, :] = \
+                        keypoints[..., right_idx, :].copy(), keypoints[..., left_idx, :].copy()
+        return keypoints
 
 
 class RandomRotation:
@@ -176,7 +134,7 @@ class RandomRotation:
         """
         self.max_rotation_degrees = max_rotation_degrees
         
-    def __call__(self, keypoints_2d=None, keypoints_3d=None):
+    def __call__(self, keypoints=None):
         """
         Randomly rotate keypoints.
         
@@ -190,7 +148,6 @@ class RandomRotation:
         # Sample a random rotation angle
         angle_degrees = np.random.uniform(-self.max_rotation_degrees, self.max_rotation_degrees)
         angle_radians = np.deg2rad(angle_degrees)
-        
         # Create rotation matrix for 2D
         cos_theta = np.cos(angle_radians)
         sin_theta = np.sin(angle_radians)
@@ -198,48 +155,24 @@ class RandomRotation:
             [cos_theta, -sin_theta],
             [sin_theta, cos_theta]
         ])
-        
+
         # Create rotation matrix for 3D (rotate around y-axis)
         rotation_matrix_3d = np.array([
             [cos_theta, 0, sin_theta],
             [0, 1, 0],
             [-sin_theta, 0, cos_theta]
         ])
-        
         # Apply rotation to 2D keypoints
-        if keypoints_2d is not None:
-            # Get the original shape
-            original_shape = keypoints_2d.shape
-            
-            # Reshape to (-1, 2) for matrix multiplication
-            keypoints_2d_reshaped = keypoints_2d.reshape(-1, 2)
-            
+        if keypoints is not None:
+            original_shape = keypoints.shape
+            dims = 2 if keypoints.shape[-1] == 2 else 3
+            rotation_matrix = rotation_matrix_2d if dims == 2 else rotation_matrix_3d
+            keypoints_reshaped = keypoints.reshape(-1, dims)
             # Apply rotation
-            keypoints_2d_rotated = np.matmul(keypoints_2d_reshaped, rotation_matrix_2d.T)
-            
+            keypoints_rotated = np.matmul(keypoints_reshaped, rotation_matrix.T)
             # Restore original shape
-            keypoints_2d = keypoints_2d_rotated.reshape(original_shape)
-        
-        # Apply rotation to 3D keypoints
-        if keypoints_3d is not None:
-            # Get the original shape
-            original_shape = keypoints_3d.shape
-            
-            # Reshape to (-1, 3) for matrix multiplication
-            keypoints_3d_reshaped = keypoints_3d.reshape(-1, 3)
-            
-            # Apply rotation
-            keypoints_3d_rotated = np.matmul(keypoints_3d_reshaped, rotation_matrix_3d.T)
-            
-            # Restore original shape
-            keypoints_3d = keypoints_3d_rotated.reshape(original_shape)
-        
-        if keypoints_2d is None:
-            return keypoints_3d
-        if keypoints_3d is None:
-            return keypoints_2d
-            
-        return keypoints_2d, keypoints_3d
+            keypoints = keypoints_rotated.reshape(original_shape)
+        return keypoints
 
 
 class RandomScale:
@@ -256,34 +189,25 @@ class RandomScale:
         self.min_scale = min_scale
         self.max_scale = max_scale
         
-    def __call__(self, keypoints_2d=None, keypoints_3d=None):
+    def __call__(self, keypoints=None):
         """
         Randomly scale keypoints.
         
         Args:
-            keypoints_2d: 2D keypoints, shape [..., num_joints, 2]
-            keypoints_3d: 3D keypoints, shape [..., num_joints, 3]
+            keypoints: 2D or 3D keypoints, shape [..., num_joints, 2/3]
             
         Returns:
             Scaled keypoints
         """
+       
         # Sample a random scale factor
         scale = np.random.uniform(self.min_scale, self.max_scale)
         
-        # Apply scaling to 2D keypoints
-        if keypoints_2d is not None:
-            keypoints_2d = keypoints_2d * scale
-        
-        # Apply scaling to 3D keypoints
-        if keypoints_3d is not None:
-            keypoints_3d = keypoints_3d * scale
-        
-        if keypoints_2d is None:
-            return keypoints_3d
-        if keypoints_3d is None:
-            return keypoints_2d
+        # Apply scaling to keypoints
+        if keypoints is not None:
+            keypoints = keypoints * scale
             
-        return keypoints_2d, keypoints_3d
+        return keypoints
 
 
 class RandomJitter:
@@ -374,75 +298,33 @@ class CenterAtRoot:
         """
         self.root_joint_idx = root_joint_idx
         
-    def __call__(self, keypoints_2d=None, keypoints_3d=None):
+    def __call__(self, keypoints=None):
         """
         Center keypoints at the root joint.
         
         Args:
-            keypoints_2d: 2D keypoints, shape [..., num_joints, 2]
-            keypoints_3d: 3D keypoints, shape [..., num_joints, 3]
+            keypoints: 2D or 3D keypoints, shape [..., num_joints, 2/3]
             
         Returns:
             Centered keypoints
         """
-        # Center 2D keypoints
-        if keypoints_2d is not None:
-            if len(keypoints_2d.shape) == 3:  # Sequence data
-                root_2d = keypoints_2d[:, self.root_joint_idx:self.root_joint_idx+1, :]
-                keypoints_2d = keypoints_2d - root_2d
-            else:
-                root_2d = keypoints_2d[self.root_joint_idx:self.root_joint_idx+1, :]
-                keypoints_2d = keypoints_2d - root_2d
-        
-        # Center 3D keypoints
-        if keypoints_3d is not None:
-            if len(keypoints_3d.shape) == 3:  # Sequence data
-                root_3d = keypoints_3d[:, self.root_joint_idx:self.root_joint_idx+1, :]
-                keypoints_3d = keypoints_3d - root_3d
-            else:
-                root_3d = keypoints_3d[self.root_joint_idx:self.root_joint_idx+1, :]
-                keypoints_3d = keypoints_3d - root_3d
-        
-        if keypoints_2d is None:
-            return keypoints_3d
-        if keypoints_3d is None:
-            return keypoints_2d
-            
-        return keypoints_2d, keypoints_3d
+        # Center keypoints
+        if keypoints is not None:
+            if len(keypoints.shape) == 3:  # Sequence data
+                root = keypoints[:, self.root_joint_idx:self.root_joint_idx+1, :]
 
+            else:
+                root = keypoints[self.root_joint_idx:self.root_joint_idx+1, :]
+            keypoints = keypoints - root
 
-class ToTensor:
-    """Convert numpy arrays to torch tensors."""
-    
-    def __call__(self, keypoints_2d=None, keypoints_3d=None):
-        """
-        Convert numpy arrays to torch tensors.
-        
-        Args:
-            keypoints_2d: 2D keypoints as numpy array
-            keypoints_3d: 3D keypoints as numpy array
-            
-        Returns:
-            Keypoints as torch tensors
-        """
-        if keypoints_2d is not None:
-            keypoints_2d = torch.from_numpy(keypoints_2d).float()
-        
-        if keypoints_3d is not None:
-            keypoints_3d = torch.from_numpy(keypoints_3d).float()
-        
-        if keypoints_2d is None:
-            return keypoints_3d
-        if keypoints_3d is None:
-            return keypoints_2d
-            
-        return keypoints_2d, keypoints_3d
+        return keypoints
 
 
 # Create default transform sets for different use cases
 def get_train_transforms(
-    mean_2d=None, std_2d=None, mean_3d=None, std_3d=None,
+    mean=None, std=None,
     flip_indices=None, 
+    flip_probability=0.5,
     max_rotation=15.0, 
     scale_range=(0.8, 1.2),
     use_jitter=True,
@@ -452,10 +334,8 @@ def get_train_transforms(
     Get standard transforms for training.
     
     Args:
-        mean_2d: Mean of 2D keypoints
-        std_2d: Standard deviation of 2D keypoints
-        mean_3d: Mean of 3D keypoints
-        std_3d: Standard deviation of 3D keypoints
+        mean: Mean of 2D or 3D keypoints
+        std: Standard deviation of 2D or 3D keypoints
         flip_indices: List of joint index pairs to swap when flipping
         max_rotation: Maximum rotation in degrees
         scale_range: Range of scaling factors (min, max)
@@ -471,35 +351,31 @@ def get_train_transforms(
     transforms.append(CenterAtRoot(root_joint_idx=root_joint_idx))
     
     # Normalize if stats are provided
-    if mean_2d is not None and std_2d is not None:
-        transforms.append(Normalize(mean_2d=mean_2d, std_2d=std_2d, mean_3d=mean_3d, std_3d=std_3d))
+    if mean is not None and std is not None:
+        transforms.append(Normalize(mean=mean, std=std))
     
     # Data augmentation
-    transforms.append(RandomFlip(probability=0.5, flip_indices=flip_indices))
+    transforms.append(RandomFlip(probability=flip_probability, flip_indices=flip_indices))
     transforms.append(RandomRotation(max_rotation_degrees=max_rotation))
     transforms.append(RandomScale(min_scale=scale_range[0], max_scale=scale_range[1]))
     
     if use_jitter:
         transforms.append(RandomJitter(max_jitter_2d=0.02, max_jitter_3d=0.02))
     
-    # Convert to tensor
-    transforms.append(ToTensor())
     
     return Compose(transforms)
 
 
 def get_val_transforms(
-    mean_2d=None, std_2d=None, mean_3d=None, std_3d=None,
+    mean=None, std=None, 
     root_joint_idx=0
 ):
     """
     Get standard transforms for validation.
     
     Args:
-        mean_2d: Mean of 2D keypoints
-        std_2d: Standard deviation of 2D keypoints
-        mean_3d: Mean of 3D keypoints
-        std_3d: Standard deviation of 3D keypoints
+        mean: Mean of 2D keypoints
+        std: Standard deviation of 2D keypoints
         root_joint_idx: Index of the root joint
         
     Returns:
@@ -511,10 +387,8 @@ def get_val_transforms(
     transforms.append(CenterAtRoot(root_joint_idx=root_joint_idx))
     
     # Normalize if stats are provided
-    if mean_2d is not None and std_2d is not None:
-        transforms.append(Normalize(mean_2d=mean_2d, std_2d=std_2d, mean_3d=mean_3d, std_3d=std_3d))
+    if mean is not None and std is not None:
+        transforms.append(Normalize(mean=mean, std=std))
     
-    # Convert to tensor
-    transforms.append(ToTensor())
     
     return Compose(transforms) 
