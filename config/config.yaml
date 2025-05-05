@@ -20,8 +20,6 @@ paths:
 data:
   dataset: "h36m"  # Options: h36m, mpi_inf_3dhp
   config_file: "config/data/h36m.yaml"
-  train_split_file: "train_part1.json,train_part2.json,train_part3.json,train_part4.json,train_part5.json"
-  val_split_file: "test_2d.json"
   batch_size: 64
   num_workers: 4
   pin_memory: true

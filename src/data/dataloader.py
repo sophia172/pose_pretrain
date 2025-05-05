@@ -85,44 +85,31 @@ def get_human36m_dataloaders(config: Dict[str, Any]) -> Tuple[DataLoader, Option
         dataset_config = {}
     
     # Resolve paths
-    base_dir = config['paths'].get('dataset', '')
-    
+    dataset_dir = config['paths'].get('dataset', '')
     # Get train file paths
     train_json_files = []
-    train_files_str = config['data'].get('train_split_file', '')
-    if train_files_str:
-        train_files = train_files_str.split(',')
-        for file in train_files:
-            file = file.strip()
-            if file:
-                for root_dir in [dataset_config.get('paths', {}).get('annotations_dir', ''), base_dir]:
-                    path = resolve_path(os.path.join(root_dir, file), base_dir)
-                    if os.path.exists(path):
-                        train_json_files.append(path)
-                        break
-    
-    if not train_json_files and 'train_json_files' in dataset_config.get('paths', {}):
-        # Try to get from dataset config
-        for file in dataset_config['paths']['train_json_files']:
-            path = resolve_path(file, base_dir)
-            if os.path.exists(path):
-                train_json_files.append(path)
+    train_files = dataset_config['paths'].get('train_json_files', '')
+
+    for file in train_files:
+        file = os.path.join(dataset_dir, 
+                            dataset_config['paths'].get('base_dir', ''),
+                            dataset_config['paths'].get('annotations_dir', ''),
+                            file)
+        file = file.strip()
+        if os.path.exists(file):
+            train_json_files.append(file)
     
     # Get validation file path
-    val_json_file = None
-    val_file = config['data'].get('val_split_file', '')
-    if val_file:
-        for root_dir in [dataset_config.get('paths', {}).get('annotations_dir', ''), base_dir]:
-            path = resolve_path(os.path.join(root_dir, val_file), base_dir)
-            if os.path.exists(path):
-                val_json_file = path
-                break
-    
-    if not val_json_file and 'test_2d_json' in dataset_config.get('paths', {}):
-        # Try to get from dataset config
-        path = resolve_path(dataset_config['paths']['test_2d_json'], base_dir)
-        if os.path.exists(path):
-            val_json_file = path
+    val_json_files = []
+    val_files = dataset_config['paths'].get('val_json_files', '')
+    for file in val_files:
+        file = os.path.join(dataset_dir,
+                            dataset_config['paths'].get('base_dir', ''),
+                            dataset_config['paths'].get('annotations_dir', ''), 
+                            file)
+        file = file.strip()
+        if os.path.exists(file):
+            val_json_files.append(file)
     
     # Check that we have valid files
     if not train_json_files:
@@ -130,8 +117,8 @@ def get_human36m_dataloaders(config: Dict[str, Any]) -> Tuple[DataLoader, Option
         raise FileNotFoundError("No valid train JSON files found")
         
     logger.info(f"Found {len(train_json_files)} train JSON files")
-    if val_json_file:
-        logger.info(f"Using validation file: {val_json_file}")
+    if val_json_files:
+        logger.info(f"Using validation files: {val_json_files}")
     else:
         logger.warning("No validation file found")
     
@@ -188,10 +175,10 @@ def get_human36m_dataloaders(config: Dict[str, Any]) -> Tuple[DataLoader, Option
     
     # Create validation dataset and loader if validation file is available
     val_loader = None
-    if val_json_file:
+    if val_json_files:
         logger.info("Creating validation dataset")
         val_dataset = Human36MDataset(
-            json_files=[val_json_file],
+            json_files=val_json_files,
             keypoint_type=keypoint_type,
             transform=val_transform,
             preload=preload,

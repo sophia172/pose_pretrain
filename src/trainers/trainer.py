@@ -9,6 +9,7 @@ import time
 import logging
 import platform
 from typing import Dict, List, Optional, Tuple, Union, Any, Callable
+import sys
 
 import torch
 import torch.nn as nn
@@ -16,7 +17,8 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 import numpy as np
 
-from ..utils.device import get_device
+
+from src.utils.device import get_device
 
 logger = logging.getLogger(__name__)
 
