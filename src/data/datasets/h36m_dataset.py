@@ -419,6 +419,7 @@ class Human36MDataset(Dataset):
                 # Extract keypoints
                 keypoints = self._extract_keypoints(data)
                 # Apply transform if provided
+
                 if self.transform:
                     if isinstance(keypoints, tuple):
                         keypoints = tuple(self.transform(k) for k in keypoints)
@@ -431,22 +432,21 @@ class Human36MDataset(Dataset):
                     keypoints_3d = torch.from_numpy(keypoints_3d)
                     
                     result = {
-                        'keypoints_2d': keypoints_2d, 
-                        'keypoints_3d': keypoints_3d, 
+                        'keypoints_2d': keypoints_2d.to(torch.float32), 
+                        'keypoints_3d': keypoints_3d.to(torch.float32), 
                         'frame_id': start_frame_id,
                         'file_idx': file_idx
                     }
                 else:
                     keypoints = torch.from_numpy(keypoints)
                     result = {
-                        f'keypoints_{self.keypoint_type}': keypoints, 
+                        f'keypoints_{self.keypoint_type}': keypoints.to(torch.float32), 
                         'frame_id': start_frame_id,
                         'file_idx': file_idx
                     }
-                
+            
             # Add metadata if needed
             result['idx'] = idx
-            
             # Log item fetch time if requested
             if self.verbose and idx % 1000 == 0:
                 fetch_time = time.time() - start_time

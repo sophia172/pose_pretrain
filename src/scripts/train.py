@@ -114,11 +114,12 @@ def setup_logging(output_dir: str, debug: bool = False) -> None:
 def create_model(config: Dict[str, Any], model_type: str = "transformer") -> nn.Module:
     """Create model based on configuration and model type."""
     model_config = config.get("model", {})
-    
+    model_config = load_config(model_config.get("config_file", "config/models/pretrain_model1.yaml"))
+    architecture = model_config.get("architecture", {})
     # Get model parameters
-    num_joints = model_config.get("num_joints", 133)
-    input_dim = model_config.get("input_dim", 2)
-    output_dim = model_config.get("output_dim", 3)
+    num_joints = architecture.get("num_joints", 133)
+    input_dim = architecture.get("input_dim", 2)
+    output_dim = architecture.get("output_dim", 3)
     
     print(f"{Fore.GREEN}🔨 Building {model_type.upper()} model with:")
     print(f"{Fore.GREEN}   - {num_joints} joints")
@@ -168,17 +169,17 @@ def create_model(config: Dict[str, Any], model_type: str = "transformer") -> nn.
         )
     else:
         # Standard transformer model
-        latent_dim = model_config.get("latent_dim", 256)
+        latent_dim = architecture.get("latent", {}).get("dim", 256)
         
-        # Architecture details
-        architecture = model_config.get("architecture", {})
-        encoder_hidden_dims = architecture.get("encoder_hidden_dims", [1024, 512])
-        decoder_hidden_dims = architecture.get("decoder_hidden_dims", [512, 1024])
-        num_encoder_layers = architecture.get("num_encoder_layers", 4)
-        num_decoder_layers = architecture.get("num_decoder_layers", 4)
-        num_heads = architecture.get("num_heads", 8)
-        dropout = architecture.get("dropout", 0.1)
-        activation = architecture.get("activation", "gelu")
+        encoder_hidden_dims = architecture.get("encoder", {}).get("hidden_dims", [1024, 512])
+        num_encoder_layers = architecture.get("encoder", {}).get("num_layers", 4)
+        num_encoder_heads = architecture.get("encoder", {}).get("num_heads", 8)
+        decoder_hidden_dims = architecture.get("decoder", {}).get("hidden_dims", [1024, 512])
+        num_decoder_layers = architecture.get("decoder", {}).get("num_layers", 4)
+        num_decoder_heads = architecture.get("decoder", {}).get("num_heads", 4)
+        
+        dropout = architecture.get("decoder", {}).get("dropout", 0.1)
+        activation = architecture.get("decoder", {}).get("activation", "gelu")
         
         # Additional features
         use_positional_encoding = architecture.get("positional_encoding", True)
@@ -201,7 +202,7 @@ def create_model(config: Dict[str, Any], model_type: str = "transformer") -> nn.
             decoder_hidden_dims=decoder_hidden_dims,
             num_encoder_layers=num_encoder_layers,
             num_decoder_layers=num_decoder_layers,
-            num_heads=num_heads,
+            num_heads=num_encoder_heads,
             dropout=dropout,
             activation=activation,
             use_positional_encoding=use_positional_encoding,
@@ -395,6 +396,7 @@ def main():
     # Create trainer
     trainer = Trainer(
         model=model,
+        config=config,
         train_loader=train_loader,
         val_loader=val_loader,
         optimizer=optimizer,

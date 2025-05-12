@@ -33,6 +33,7 @@ class Trainer:
     def __init__(
         self,
         model: nn.Module,
+        config: Dict[str, Any],
         train_loader: DataLoader,
         val_loader: Optional[DataLoader] = None,
         optimizer: Optional[torch.optim.Optimizer] = None,
@@ -57,6 +58,7 @@ class Trainer:
         
         Args:
             model: Model to train
+            config: Configuration dictionary
             train_loader: DataLoader for training data
             val_loader: Optional DataLoader for validation data
             optimizer: Optimizer for training
@@ -77,6 +79,7 @@ class Trainer:
             progress_fn: Optional function to update progress display
         """
         self.model = model
+        self.config = config
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.optimizer = optimizer
@@ -268,6 +271,7 @@ class Trainer:
         Returns:
             Dictionary of training metrics for the epoch
         """
+        logger.debug(f"Starting training epoch {epoch+1}")
         self.model.train()
         
         # Track metrics
@@ -278,65 +282,104 @@ class Trainer:
         start_time = time.time()
         num_batches = len(self.train_loader)
         
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(f"Loaded train loader")
+        logger.debug(f"Train loader initialized with {num_batches} batches")
+        
         # Iterate over batches
         for batch_idx, batch in enumerate(self.train_loader):
+            logger.debug(f"Processing batch {batch_idx+1}/{num_batches}")
+            
             # Move data to device
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(f"Batch {batch_idx} started")
-                
-            inputs = batch["input"].to(self.device)
-            targets = batch["target"].to(self.device) if "target" in batch else None
+            logger.debug("Moving input data to device")
+            inputs = batch[self.config.get("input_type", "keypoints_2d")].to(self.device)
+            logger.debug(f"Input shape: {inputs.shape}")
+            
+            if self.config["target_type"] in batch:
+                logger.debug("Moving target data to device")
+                targets = batch[self.config.get("target_type", "keypoints_2d")].to(self.device)
+                logger.debug(f"Target shape: {targets.shape}")
+            else:
+                logger.debug("No target data found in batch")
+                targets = None
+            
             # Zero gradients
+            logger.debug("Zeroing gradients")
             self.optimizer.zero_grad()
             
             # Forward pass with mixed precision if enabled
             if self.mixed_precision and self.device.type == 'cuda':
+                logger.debug("Using mixed precision training")
                 with torch.cuda.amp.autocast():
+                    logger.debug("Forward pass with mixed precision")
                     outputs = self.model(inputs, targets) if targets is not None else self.model(inputs)
+                    logger.debug(f"Model output keys: {outputs.keys() if isinstance(outputs, dict) else 'tensor'}")
                     
                     if self.loss_fn is not None:
-                        loss = self.loss_fn(outputs, targets)
+                        logger.debug("Computing loss using provided loss function")
+                        # If outputs is a dictionary, use the total_loss from the model
+                        if isinstance(outputs, dict):
+                            loss = outputs['total_loss']
+                            logger.debug(f"Using model's total_loss: {loss.item():.4f}")
+                        else:
+                            loss = self.loss_fn(outputs, targets)
+                            logger.debug(f"Computed loss using loss_fn: {loss.item():.4f}")
                     else:
-                        # If no loss function is provided, use the model's computed loss
+                        logger.debug("Using model's computed loss")
                         loss = outputs["total_loss"] if "total_loss" in outputs else outputs["loss"]
+                        logger.debug(f"Using model's loss: {loss.item():.4f}")
                 
                 # Backward pass with scaler
+                logger.debug("Backward pass with gradient scaler")
                 self.scaler.scale(loss).backward()
                 
                 # Gradient clipping if enabled
                 if self.clip_grad_norm is not None:
+                    logger.debug(f"Applying gradient clipping with norm {self.clip_grad_norm}")
                     self.scaler.unscale_(self.optimizer)
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_grad_norm)
                 
                 # Optimizer step with scaler
+                logger.debug("Optimizer step with gradient scaler")
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
             else:
+                logger.debug("Using standard precision training")
                 # Standard forward pass
+                logger.debug("Forward pass")
                 outputs = self.model(inputs, targets) if targets is not None else self.model(inputs)
+                logger.debug(f"Model output keys: {outputs.keys() if isinstance(outputs, dict) else 'tensor'}")
                 
                 if self.loss_fn is not None:
-                    loss = self.loss_fn(outputs, targets)
+                    logger.debug("Computing loss using provided loss function")
+                    # If outputs is a dictionary, use the total_loss from the model
+                    if isinstance(outputs, dict):
+                        loss = outputs['total_loss']
+                        logger.debug(f"Using model's total_loss: {loss.item():.4f}")
+                    else:
+                        loss = self.loss_fn(outputs, targets)
+                        logger.debug(f"Computed loss using loss_fn: {loss.item():.4f}")
                 else:
-                    # If no loss function is provided, use the model's computed loss
+                    logger.debug("Using model's computed loss")
                     loss = outputs["total_loss"] if "total_loss" in outputs else outputs["loss"]
+                    logger.debug(f"Using model's loss: {loss.item():.4f}")
                 
                 # Backward pass
+                logger.debug("Backward pass")
                 loss.backward()
                 
                 # Gradient clipping if enabled
                 if self.clip_grad_norm is not None:
+                    logger.debug(f"Applying gradient clipping with norm {self.clip_grad_norm}")
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_grad_norm)
                 
                 # Optimizer step
+                logger.debug("Optimizer step")
                 self.optimizer.step()
             
             # Update metrics
             batch_size = inputs.size(0)
             samples_count += batch_size
             total_loss += loss.item() * batch_size
+            logger.debug(f"Updated metrics - Batch size: {batch_size}, Total samples: {samples_count}, Current loss: {loss.item():.4f}")
             
             # Log batch metrics
             if batch_idx % self.log_every == 0:
@@ -347,18 +390,22 @@ class Trainer:
             
             # Call batch end callback
             if self.on_batch_end_callback:
+                logger.debug("Executing batch end callback")
                 self.on_batch_end_callback(batch_idx, num_batches, loss.item())
                 
             # Update progress if function provided
             if self.progress_fn is not None:
                 progress = (epoch + batch_idx / len(self.train_loader)) / self.max_epochs
+                logger.debug(f"Updating progress: {progress:.2%}")
                 self.progress_fn(progress)
                 
             # Update global step
             self.global_step += 1
+            logger.debug(f"Updated global step to {self.global_step}")
         
         # Calculate epoch metrics
         avg_loss = total_loss / samples_count if samples_count > 0 else 0.0
+        logger.debug(f"Epoch {epoch+1} completed - Average loss: {avg_loss:.4f}")
         
         # Log epoch metrics
         logger.info(f"Epoch {epoch+1}/{self.max_epochs} Training - Loss: {avg_loss:.4f}")
@@ -663,7 +710,8 @@ def get_scheduler(optimizer: torch.optim.Optimizer, config: Dict[str, Any]) -> O
 
 if __name__ == "__main__":
     # Example usage
-    logging.basicConfig(level=logging.INFO)
+    if logger.isEnabledFor(logging.DEBUG):
+        logging.basicConfig(level=logging.DEBUG)
     
     # Create a dummy model, data, and trainer for testing
     dummy_model = nn.Linear(10, 10)

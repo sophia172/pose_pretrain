@@ -222,17 +222,16 @@ class PoseDecoder(nn.Module):
         decoder_layers = []
         for i in range(num_layers):
             # Use the next hidden dimension if available
-            out_dim = hidden_dims[i+1] if i+1 < len(hidden_dims) else working_dim
+            
             
             layer = TransformerDecoderLayer(
                 embed_dim=working_dim,
                 num_heads=num_heads,
-                hidden_dim=out_dim * 4,  # Typical FFN size
+                hidden_dim=working_dim * 4,  # Typical FFN size
                 dropout=dropout,
                 activation=self.activation
             )
             decoder_layers.append(layer)
-            working_dim = out_dim
             
         self.decoder_layers = nn.ModuleList(decoder_layers)
         

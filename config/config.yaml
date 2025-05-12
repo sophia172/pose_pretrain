@@ -5,7 +5,7 @@ experiment:
   name: h36m_unsupervised_pretrain
   description: "Unsupervised pretraining for Human3.6M dataset"
   seed: 42
-  debug: True
+  debug: false
 
 # Paths
 paths:
@@ -20,7 +20,7 @@ paths:
 data:
   dataset: "h36m"  # Options: h36m, mpi_inf_3dhp
   config_file: "config/data/h36m.yaml"
-  batch_size: 64
+  batch_size: 16
   num_workers: 4
   pin_memory: true
   shuffle: true
@@ -29,17 +29,13 @@ data:
   keypoint_type: "both"  # Options: 2d, 3d, both
   preload: false  # Whether to preload data in memory
 
+input_type: "keypoints_2d"
+target_type: "keypoints_3d"
 # Model configuration
 model:
   name: "pretrain_model"
   config_file: "config/models/pretrain_model1.yaml"
-  input_dim: 2  # 2D keypoint dimension
-  output_dim: 3  # 3D keypoint dimension
-  hidden_dims: [1024, 512]
-  dropout: 0.1
-  num_joints: 133
-  use_attention: true
-
+  
 # Training configuration
 training:
   epochs: 100
