@@ -708,7 +708,7 @@ def get_human36m_dataloader(
         dataset,
         batch_size=batch_size,
         shuffle=shuffle,
-        num_workers=num_workers,
+        num_workers=os.cpu_count(),
         drop_last=drop_last,
         pin_memory=pin_memory,
         persistent_workers=persistent_workers if num_workers > 0 else False
