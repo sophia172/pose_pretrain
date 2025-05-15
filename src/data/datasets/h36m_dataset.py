@@ -158,10 +158,10 @@ class Human36MDataset(Dataset):
                 
         # Log statistics about the dataset
         if frames_per_file:
-            logger.info(f"Files processed: {len(frames_per_file)}")
-            logger.info(f"Total frames across all files: {sum(frames_per_file)}")
-            logger.info(f"Average frames per file: {sum(frames_per_file) / len(frames_per_file):.1f}")
-            logger.info(f"Valid sequences in dataset: {len(self.frame_mapping)}")
+            logger.debug(f"Files processed: {len(frames_per_file)}")
+            logger.debug(f"Total frames across all files: {sum(frames_per_file)}")
+            logger.debug(f"Average frames per file: {sum(frames_per_file) / len(frames_per_file):.1f}")
+            logger.debug(f"Valid sequences in dataset: {len(self.frame_mapping)}")
     
     def _get_frame_ids(self, json_file: str) -> List[str]:
         """

@@ -20,7 +20,7 @@ paths:
 data:
   dataset: "h36m"  # Options: h36m, mpi_inf_3dhp
   config_file: "config/data/h36m.yaml"
-  batch_size: 512
+  batch_size: 16
   num_workers: 4
   pin_memory: true
   shuffle: true
