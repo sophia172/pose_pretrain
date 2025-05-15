@@ -271,7 +271,7 @@ def get_dataset_stats(config: Dict[str, Any]) -> Tuple[Tuple[torch.Tensor, torch
         # Use only the first file for efficiency
         if train_json_files:
             stats_dataset = Human36MDataset(
-                json_files=[train_json_files[0]],
+                json_files=train_json_files,
                 keypoint_type='both',
                 preload=False,
                 sequence_length=1,
