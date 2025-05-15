@@ -21,10 +21,11 @@ setup(
     version="V0.0.1",
     author="Ying Liu",
     author_email="sophia.j.liu@gmail.com",
-    packages=find_packages(),
+    package_dir={"": "src"},
+    packages=find_packages(where="src"),
     install_requires=get_requirements("requirements.txt"),
     entry_points={
-        "console_scripts": ["pretrain=src.scripts.train:main"],
+        "console_scripts": ["pretrain=scripts.train:main"],
     },
     description="End to End Machine Learning Project template",
     long_description=open("README.md", encoding="utf-8").read(),

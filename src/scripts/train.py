@@ -472,8 +472,7 @@ def main():
     
     return 0
 
-
-if __name__ == "__main__":
+def cli():
     try:
         sys.exit(main())
     except KeyboardInterrupt:
@@ -484,3 +483,6 @@ if __name__ == "__main__":
         import traceback
         traceback.print_exc()
         sys.exit(1) 
+
+if __name__ == "__main__":
+    cli()
