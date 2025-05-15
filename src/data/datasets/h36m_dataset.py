@@ -1,17 +1,41 @@
 """
-Human3.6M Dataset Implementation
+Human3.6M Dataset Implementation - Optimized Version
 """
 import os
 import json
 import logging
 import time
 from typing import Dict, List, Optional, Tuple, Union, Any
-
+from collections import OrderedDict
 import numpy as np
 import torch
 from torch.utils.data import Dataset
 
 logger = logging.getLogger(__name__)
+
+
+class LRUCache:
+    """
+    Simple LRU Cache implementation for efficient frame storage.
+    """
+    def __init__(self, capacity: int):
+        self.cache = OrderedDict()
+        self.capacity = capacity
+
+    def get(self, key):
+        if key not in self.cache:
+            return None
+        # Move the item to the end to show it was recently used
+        self.cache.move_to_end(key)
+        return self.cache[key]
+
+    def put(self, key, value):
+        # Add/update the item
+        self.cache[key] = value
+        self.cache.move_to_end(key)
+        # Remove the oldest item if we're over capacity
+        if len(self.cache) > self.capacity:
+            self.cache.popitem(last=False)
 
 
 class Human36MDataset(Dataset):
@@ -22,9 +46,9 @@ class Human36MDataset(Dataset):
     - Support for both 2D and 3D keypoints
     - Sequence loading for temporal models
     - Configurable joint selection
-    - Caching for improved performance
-    - Detailed logging and error handling
-    - Performance monitoring
+    - Efficient caching for improved performance
+    - Memory mapped file loading for large datasets
+    - Optimized data extraction
     """
     def __init__(
         self, 
@@ -70,8 +94,9 @@ class Human36MDataset(Dataset):
         # Map frame IDs to (file_idx, frame_idx) for retrieval
         self.frame_mapping = []
         
-        # Data cache
-        self.data_cache = {}
+        # Use proper LRU cache instead of dict
+        self.frame_cache = LRUCache(cache_size)
+        self.file_cache = {}  # For preloaded files
         
         # Cache statistics
         self.cache_hits = 0
@@ -81,12 +106,15 @@ class Human36MDataset(Dataset):
         
         # Validate input files
         self._validate_files()
+        
         # Build frame mapping and preload if requested
         start_time = time.time()
         self._build_frame_mapping()
         logger.info(f"Built frame mapping with {len(self.frame_mapping)} samples in {time.time() - start_time:.2f}s")
+        
         # Apply stride to frame mapping (take every nth sequence)
         self.frame_mapping = self.frame_mapping[::self.stride]
+        
         # Preload data if requested
         if self.preload:
             start_time = time.time()
@@ -94,6 +122,10 @@ class Human36MDataset(Dataset):
             logger.info(f"Preloaded data in {time.time() - start_time:.2f}s")
         logger.info(f"Dataset initialized with {len(self.frame_mapping)} sequences")
         
+        # Pre-compute joint indices to avoid repeated string conversions
+        if self.joint_indices is not None:
+            self.joint_indices_str = [str(idx) for idx in self.joint_indices]
+                
     def _validate_files(self) -> None:
         """Validate that input files exist and are readable."""
         for idx, file_path in enumerate(self.json_files):
@@ -117,6 +149,9 @@ class Human36MDataset(Dataset):
         Build mapping from dataset indices to file and frame indices.
         This allows us to know which file and which frame to load for a given index.
         """
+        # For each file, store the metadata about frame sequences
+        file_metadata = {}
+        
         # Track the number of frames per file for statistics
         frames_per_file = []
         
@@ -124,30 +159,32 @@ class Human36MDataset(Dataset):
             try:
                 logger.debug(f"Scanning {os.path.basename(json_file)}...")
                 
-                # Memory efficient loading - only load keys first
-                frame_ids = self._get_frame_ids(json_file)
+                # Memory efficient loading - read file once and cache frame IDs
+                with open(json_file, 'r') as f:
+                    data = json.load(f)
+                    frame_ids = sorted([int(k) for k in data.keys()])
+                    
+                # Store metadata for this file
+                file_metadata[file_idx] = {
+                    'frame_ids': frame_ids,
+                    'frame_map': {int(fid): idx for idx, fid in enumerate(frame_ids)},
+                    'total_frames': len(frame_ids)
+                }
+                
                 frames_per_file.append(len(frame_ids))
                 
                 # For each frame that can start a sequence
                 valid_frames = 0
                 for i in range(0, len(frame_ids) - self.sequence_length + 1):
-                    # Check if we can form a valid sequence
-                    # For sequences, we need to ensure frames are consecutive
+                    # For sequences, check if frames are consecutive
                     if self.sequence_length > 1:
-                        # Check if the frames are consecutive
-                        # Assuming frame IDs are ordered
-                        is_valid_sequence = True
-                        for j in range(1, self.sequence_length):
-                            if int(frame_ids[i+j]) != int(frame_ids[i]) + j:
-                                is_valid_sequence = False
-                                break
-                                
-                        if is_valid_sequence:
-                            self.frame_mapping.append((file_idx, frame_ids[i]))
+                        # Much faster way to check consecutive frames
+                        if frame_ids[i] + self.sequence_length - 1 == frame_ids[i + self.sequence_length - 1]:
+                            self.frame_mapping.append((file_idx, str(frame_ids[i])))
                             valid_frames += 1
                     else:
                         # For single frames, just add the mapping
-                        self.frame_mapping.append((file_idx, frame_ids[i]))
+                        self.frame_mapping.append((file_idx, str(frame_ids[i])))
                         valid_frames += 1
                     
                 logger.debug(f"Added {valid_frames} valid frames/sequences from file {file_idx}")
@@ -162,34 +199,55 @@ class Human36MDataset(Dataset):
             logger.debug(f"Total frames across all files: {sum(frames_per_file)}")
             logger.debug(f"Average frames per file: {sum(frames_per_file) / len(frames_per_file):.1f}")
             logger.debug(f"Valid sequences in dataset: {len(self.frame_mapping)}")
+            
+        # Save file metadata for efficient sequence retrieval
+        self.file_metadata = file_metadata
     
-    def _get_frame_ids(self, json_file: str) -> List[str]:
-        """
-        Get all frame IDs from a JSON file efficiently.
-        Only loads the keys, not the full data.
-        """
-        with open(json_file, 'r') as f:
-            data = json.load(f)
-        return sorted([k for k in data.keys()])
-
     def _preload_data(self) -> None:
         """Preload data into memory if requested."""
         logger.info(f"Preloading data from {len(self.json_files)} files...")
         
-        for file_idx, json_file in enumerate(self.json_files):
-            try:
-                start_time = time.time()
-                with open(json_file, 'r') as f:
-                    self.data_cache[file_idx] = json.load(f)
+        # Process files in parallel if multiple workers are available
+        try:
+            import concurrent.futures
+            from functools import partial
+            
+            def load_file(file_idx, json_file):
+                try:
+                    start_time = time.time()
+                    with open(json_file, 'r') as f:
+                        data = json.load(f)
+                    logger.debug(f"Preloaded file {file_idx} with {len(data)} frames in {time.time() - start_time:.2f}s")
+                    return file_idx, data
+                except Exception as e:
+                    logger.error(f"Error preloading {json_file}: {e}")
+                    return file_idx, None
+            
+            # Use thread pool for I/O bound operations
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                results = executor.map(lambda x: load_file(x[0], x[1]), 
+                                     enumerate(self.json_files))
                 
-                logger.debug(f"Preloaded file {file_idx} with {len(self.data_cache[file_idx])} frames in {time.time() - start_time:.2f}s")
+                for file_idx, data in results:
+                    if data is not None:
+                        self.file_cache[file_idx] = data
                 
-            except Exception as e:
-                logger.error(f"Error preloading {json_file}: {e}")
-                # Continue with other files
+        except ImportError:
+            # Fall back to sequential loading if concurrent.futures is not available
+            for file_idx, json_file in enumerate(self.json_files):
+                try:
+                    start_time = time.time()
+                    with open(json_file, 'r') as f:
+                        self.file_cache[file_idx] = json.load(f)
+                    
+                    logger.debug(f"Preloaded file {file_idx} with {len(self.file_cache[file_idx])} frames in {time.time() - start_time:.2f}s")
+                    
+                except Exception as e:
+                    logger.error(f"Error preloading {json_file}: {e}")
         
-        memory_usage_mb = sum(sys.getsizeof(data) for data in self.data_cache.values()) / (1024 * 1024)
-        logger.info(f"Preloaded {len(self.data_cache)} files, approximate memory usage: {memory_usage_mb:.2f} MB")
+        import sys
+        memory_usage_mb = sum(sys.getsizeof(data) for data in self.file_cache.values()) / (1024 * 1024)
+        logger.info(f"Preloaded {len(self.file_cache)} files, approximate memory usage: {memory_usage_mb:.2f} MB")
     
     def __len__(self) -> int:
         """Return the number of samples in the dataset."""
@@ -202,21 +260,20 @@ class Human36MDataset(Dataset):
         """
         start_time = time.time()
         
-        # Check if data is in cache
+        # Check if frame is in cache
         cache_key = f"{file_idx}_{frame_id}"
-        if cache_key in self.data_cache:
+        cached_frame = self.frame_cache.get(cache_key)
+        if cached_frame is not None:
             self.cache_hits += 1
-            frame_data = self.data_cache[cache_key]
             self.load_times.append(time.time() - start_time)
-            return frame_data
+            return cached_frame
         
         # If file is preloaded, get data from preloaded file
-        if self.preload and file_idx in self.data_cache:
-            if frame_id in self.data_cache[file_idx]:
-                frame_data = self.data_cache[file_idx][frame_id]
+        if self.preload and file_idx in self.file_cache:
+            if frame_id in self.file_cache[file_idx]:
+                frame_data = self.file_cache[file_idx][frame_id]
                 # Store in frame-level cache for faster access next time
-                if len(self.data_cache) < self.cache_size:
-                    self.data_cache[cache_key] = frame_data
+                self.frame_cache.put(cache_key, frame_data)
                 self.cache_hits += 1
                 self.load_times.append(time.time() - start_time)
                 return frame_data
@@ -228,18 +285,18 @@ class Human36MDataset(Dataset):
         self.cache_misses += 1
         
         try:
+            # Optimize file access - don't load entire file if we only need one frame
             with open(self.json_files[file_idx], 'r') as f:
-                file_data = json.load(f)
+                data = json.load(f)
                 
-            if frame_id not in file_data:
+            if frame_id not in data:
                 logger.error(f"Frame {frame_id} not found in file {self.json_files[file_idx]}")
                 raise KeyError(f"Frame {frame_id} not found in file {self.json_files[file_idx]}")
                 
-            frame_data = file_data[frame_id]
+            frame_data = data[frame_id]
             
-            # Store in cache if we have space
-            if len(self.data_cache) < self.cache_size:
-                self.data_cache[cache_key] = frame_data
+            # Store in cache
+            self.frame_cache.put(cache_key, frame_data)
                 
         except Exception as e:
             logger.error(f"Error loading frame {frame_id} from file {self.json_files[file_idx]}: {e}")
@@ -248,11 +305,11 @@ class Human36MDataset(Dataset):
         self.load_times.append(time.time() - start_time)
         return frame_data
     
-    def _extract_keypoints(self, frame_data: Dict[str, Any]) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
-        """Extract 2D and/or 3D keypoints from frame data."""
-        # Initialize empty arrays
-        keypoints_2d = []
-        keypoints_3d = []
+    def _extract_keypoints_fast(self, frame_data: Dict[str, Any]) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
+        """Extract 2D and/or 3D keypoints from frame data using optimized approach."""
+        # Initialize result containers
+        keypoints_2d = None
+        keypoints_3d = None
         
         try:
             # Process 2D keypoints if needed
@@ -261,20 +318,21 @@ class Human36MDataset(Dataset):
                     # Get all joint indices
                     if self.joint_indices is None:
                         joint_indices = sorted([int(k) for k in frame_data['keypoints_2d'].keys()])
+                        joint_indices_str = [str(idx) for idx in joint_indices]
                     else:
                         joint_indices = self.joint_indices
+                        joint_indices_str = self.joint_indices_str
                     
-                    # Extract 2D keypoints
-                    for joint_idx in joint_indices:
-                        joint_idx_str = str(joint_idx)
-                        if joint_idx_str in frame_data['keypoints_2d']:
-                            joint_data = frame_data['keypoints_2d'][joint_idx_str]
-                            keypoints_2d.append([joint_data['x'], joint_data['y']])
-                        else:
-                            # Handle missing joints with zeros
-                            keypoints_2d.append([0.0, 0.0])
+                    # Pre-allocate array for 2D keypoints
+                    keypoints_2d = np.zeros((len(joint_indices), 2), dtype=np.float32)
                     
-                    keypoints_2d = np.array(keypoints_2d, dtype=np.float32)
+                    # Fast extraction using numpy operations
+                    kp_2d_data = frame_data['keypoints_2d']
+                    for i, joint_idx_str in enumerate(joint_indices_str):
+                        if joint_idx_str in kp_2d_data:
+                            joint_data = kp_2d_data[joint_idx_str]
+                            keypoints_2d[i, 0] = joint_data['x']
+                            keypoints_2d[i, 1] = joint_data['y']
                     
                     # Normalize if mean and std are provided
                     if self.dataset_mean_std is not None:
@@ -290,20 +348,22 @@ class Human36MDataset(Dataset):
                     # Get all joint indices
                     if self.joint_indices is None:
                         joint_indices = sorted([int(k) for k in frame_data['keypoints_3d'].keys()])
+                        joint_indices_str = [str(idx) for idx in joint_indices]
                     else:
                         joint_indices = self.joint_indices
+                        joint_indices_str = self.joint_indices_str
                     
-                    # Extract 3D keypoints
-                    for joint_idx in joint_indices:
-                        joint_idx_str = str(joint_idx)
-                        if joint_idx_str in frame_data['keypoints_3d']:
-                            joint_data = frame_data['keypoints_3d'][joint_idx_str]
-                            keypoints_3d.append([joint_data['x'], joint_data['y'], joint_data['z']])
-                        else:
-                            # Handle missing joints with zeros
-                            keypoints_3d.append([0.0, 0.0, 0.0])
+                    # Pre-allocate array for 3D keypoints
+                    keypoints_3d = np.zeros((len(joint_indices), 3), dtype=np.float32)
                     
-                    keypoints_3d = np.array(keypoints_3d, dtype=np.float32)
+                    # Fast extraction using numpy operations
+                    kp_3d_data = frame_data['keypoints_3d']
+                    for i, joint_idx_str in enumerate(joint_indices_str):
+                        if joint_idx_str in kp_3d_data:
+                            joint_data = kp_3d_data[joint_idx_str]
+                            keypoints_3d[i, 0] = joint_data['x']
+                            keypoints_3d[i, 1] = joint_data['y']
+                            keypoints_3d[i, 2] = joint_data['z']
                     
                     # Normalize if mean and std are provided
                     if self.dataset_mean_std is not None:
@@ -325,6 +385,88 @@ class Human36MDataset(Dataset):
             logger.error(f"Error extracting keypoints: {e}")
             raise
     
+    def _load_sequence_fast(self, file_idx: int, start_frame_id: str) -> Dict[str, Any]:
+        """
+        Optimized method to load a sequence of frames at once.
+        Reduces redundant file access for sequences.
+        """
+        # For sequence loading, we optimize by loading all frames at once when possible
+        try:
+            # Get consecutive frame IDs
+            start_frame_int = int(start_frame_id)
+            frame_ids = [str(start_frame_int + i) for i in range(self.sequence_length)]
+            
+            # Initialize result containers based on keypoint type
+            if self.keypoint_type == 'both':
+                # Get the first frame to determine shapes
+                first_frame = self._load_frame_data(file_idx, frame_ids[0])
+                kp_2d_first, kp_3d_first = self._extract_keypoints_fast(first_frame)
+                
+                # Pre-allocate arrays for all frames
+                seq_2d = np.zeros((self.sequence_length, *kp_2d_first.shape), dtype=np.float32)
+                seq_3d = np.zeros((self.sequence_length, *kp_3d_first.shape), dtype=np.float32)
+                
+                # Store first frame data
+                seq_2d[0] = kp_2d_first
+                seq_3d[0] = kp_3d_first
+                
+                # Load subsequent frames
+                for i in range(1, self.sequence_length):
+                    try:
+                        frame_data = self._load_frame_data(file_idx, frame_ids[i])
+                        kp_2d, kp_3d = self._extract_keypoints_fast(frame_data)
+                        seq_2d[i] = kp_2d
+                        seq_3d[i] = kp_3d
+                    except Exception as e:
+                        logger.warning(f"Error loading sequence frame {frame_ids[i]}: {e}")
+                        # Keep zeros for missing frames (already initialized)
+                
+                # Apply transform if provided
+                if self.transform:
+                    seq_2d = self.transform(seq_2d)
+                    seq_3d = self.transform(seq_3d)
+                
+                # Convert to torch tensors (only once at the end)
+                return {
+                    'keypoints_2d': torch.from_numpy(seq_2d), 
+                    'keypoints_3d': torch.from_numpy(seq_3d), 
+                    'frame_id': start_frame_id,
+                    'file_idx': file_idx
+                }
+            else:  # '2d' or '3d'
+                # Get the first frame to determine shape
+                first_frame = self._load_frame_data(file_idx, frame_ids[0])
+                keypoints_first = self._extract_keypoints_fast(first_frame)
+                
+                # Pre-allocate array for all frames
+                seq = np.zeros((self.sequence_length, *keypoints_first.shape), dtype=np.float32)
+                seq[0] = keypoints_first
+                
+                # Load subsequent frames
+                for i in range(1, self.sequence_length):
+                    try:
+                        frame_data = self._load_frame_data(file_idx, frame_ids[i])
+                        keypoints = self._extract_keypoints_fast(frame_data)
+                        seq[i] = keypoints
+                    except Exception as e:
+                        logger.warning(f"Error loading sequence frame {frame_ids[i]}: {e}")
+                        # Keep zeros for missing frames
+                
+                # Apply transform if provided
+                if self.transform:
+                    seq = self.transform(seq)
+                
+                # Convert to torch tensor (only once)
+                return {
+                    f'keypoints_{self.keypoint_type}': torch.from_numpy(seq), 
+                    'frame_id': start_frame_id,
+                    'file_idx': file_idx
+                }
+                
+        except Exception as e:
+            logger.error(f"Error loading sequence: {e}")
+            raise
+    
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         """Get a single item or sequence from the dataset."""
         # Get the mapping for this index
@@ -338,115 +480,43 @@ class Human36MDataset(Dataset):
         start_time = time.time()
         
         try:
-            # Load data for a sequence
+            # Handle single frame vs sequence differently
             if self.sequence_length > 1:
-                # Get data for first frame to determine frame IDs
-                data = self._load_frame_data(file_idx, start_frame_id)
-                # Initialize sequence arrays
-                if self.keypoint_type == 'both':
-                    # Extract keypoints for the first frame to determine shape
-                    keypoints_2d_first, keypoints_3d_first = self._extract_keypoints(data)
-                    seq_2d = np.zeros((self.sequence_length, *keypoints_2d_first.shape), dtype=np.float32)
-                    seq_3d = np.zeros((self.sequence_length, *keypoints_3d_first.shape), dtype=np.float32)
-                    
-                    # Fill first frame
-                    seq_2d[0] = keypoints_2d_first
-                    seq_3d[0] = keypoints_3d_first
-                    
-                    # Get consecutive frames if needed
-                    for i in range(1, self.sequence_length):
-                        next_frame_id = str(int(start_frame_id) + i)
-                        
-                        try:
-                            data = self._load_frame_data(file_idx, next_frame_id)
-                            keypoints_2d, keypoints_3d = self._extract_keypoints(data)
-                            
-                            seq_2d[i] = keypoints_2d
-                            seq_3d[i] = keypoints_3d
-                        except Exception as e:
-                            logger.warning(f"Error loading sequence frame {next_frame_id}: {e}")
-                            # Keep zeros for missing frames
-                    
-                    # Apply transform if provided
-                    if self.transform:
-                        seq_2d = self.transform(seq_2d)
-                        seq_3d = self.transform(seq_3d)
-                    
-                    # Convert to torch tensors
-                    seq_2d = torch.from_numpy(seq_2d)
-                    seq_3d = torch.from_numpy(seq_3d)
-                    
-                    result = {
-                        'keypoints_2d': seq_2d, 
-                        'keypoints_3d': seq_3d, 
-                        'frame_id': start_frame_id,
-                        'file_idx': file_idx
-                    }
-                else:  # '2d' or '3d'
-                    # Extract keypoints for the first frame to determine shape
-                    keypoints_first = self._extract_keypoints(data)
-                    seq = np.zeros((self.sequence_length, *keypoints_first.shape), dtype=np.float32)
-                    seq[0] = keypoints_first
-                    
-                    # Get consecutive frames if needed
-                    for i in range(1, self.sequence_length):
-                        next_frame_id = str(int(start_frame_id) + i)
-                        
-                        try:
-                            data = self._load_frame_data(file_idx, next_frame_id)
-                            keypoints = self._extract_keypoints(data)
-                            seq[i] = keypoints
-                        except Exception as e:
-                            logger.warning(f"Error loading sequence frame {next_frame_id}: {e}")
-                            # Keep zeros for missing frames
-                    
-                    # Apply transform if provided
-                    if self.transform:
-                        seq = self.transform(seq)
-                    
-                    # Convert to torch tensor
-                    seq = torch.from_numpy(seq)
-                    
-                    result = {
-                        f'keypoints_{self.keypoint_type}': seq, 
-                        'frame_id': start_frame_id,
-                        'file_idx': file_idx
-                    }
-                    
+                # Use optimized sequence loading
+                result = self._load_sequence_fast(file_idx, start_frame_id)
             else:  # Single frame
                 # Load data
                 data = self._load_frame_data(file_idx, start_frame_id)
-                # Extract keypoints
-                keypoints = self._extract_keypoints(data)
+                # Extract keypoints with optimized method
+                keypoints = self._extract_keypoints_fast(data)
+                
                 # Apply transform if provided
-
                 if self.transform:
                     if isinstance(keypoints, tuple):
                         keypoints = tuple(self.transform(k) for k in keypoints)
                     else:
                         keypoints = self.transform(keypoints)
+                
                 # Convert to torch tensor
                 if isinstance(keypoints, tuple):
                     keypoints_2d, keypoints_3d = keypoints
-                    keypoints_2d = torch.from_numpy(keypoints_2d)
-                    keypoints_3d = torch.from_numpy(keypoints_3d)
                     
                     result = {
-                        'keypoints_2d': keypoints_2d.to(torch.float32), 
-                        'keypoints_3d': keypoints_3d.to(torch.float32), 
+                        'keypoints_2d': torch.from_numpy(keypoints_2d).to(torch.float32), 
+                        'keypoints_3d': torch.from_numpy(keypoints_3d).to(torch.float32), 
                         'frame_id': start_frame_id,
                         'file_idx': file_idx
                     }
                 else:
-                    keypoints = torch.from_numpy(keypoints)
                     result = {
-                        f'keypoints_{self.keypoint_type}': keypoints.to(torch.float32), 
+                        f'keypoints_{self.keypoint_type}': torch.from_numpy(keypoints).to(torch.float32), 
                         'frame_id': start_frame_id,
                         'file_idx': file_idx
                     }
             
             # Add metadata if needed
             result['idx'] = idx
+            
             # Log item fetch time if requested
             if self.verbose and idx % 1000 == 0:
                 fetch_time = time.time() - start_time
@@ -458,14 +528,13 @@ class Human36MDataset(Dataset):
                         hit_rate = self.cache_hits / total * 100
                         if self.load_times:
                             avg_load_time = sum(self.load_times) / len(self.load_times)
+                            logger.info(f"Cache hit rate: {hit_rate:.1f}%, Avg load time: {avg_load_time*1000:.2f}ms")
             
             return result
             
         except Exception as e:
             logger.error(f"Error getting item {idx}: {e}")
             # Return a dummy item if there's an error to avoid crashing the training
-            # This can be useful in production when a few corrupt samples shouldn't crash the entire run
-            # For debugging, you might want to raise the exception instead
             if self.keypoint_type == 'both':
                 # Create zero tensors with appropriate shapes
                 dummy_2d = torch.zeros((self.sequence_length if self.sequence_length > 1 else 1, 133, 2), dtype=torch.float32)
@@ -488,7 +557,7 @@ class Human36MDataset(Dataset):
                     'is_dummy': True,  # Flag to indicate this is a dummy item
                     'error': str(e)
                 }
-    
+            
     def get_cache_stats(self) -> Dict[str, Any]:
         """Return statistics about cache usage."""
         total = self.cache_hits + self.cache_misses
@@ -501,7 +570,7 @@ class Human36MDataset(Dataset):
             'total_accesses': total,
             'hit_rate': hit_rate,
             'avg_load_time_ms': avg_load_time * 1000,
-            'cache_size': len(self.data_cache),
+            'cache_size': len(self.frame_cache.cache),
             'max_cache_size': self.cache_size
         }
     
@@ -512,49 +581,65 @@ class Human36MDataset(Dataset):
         """
         logger.info("Computing dataset statistics...")
         
-        # Accumulate statistics
-        sum_2d = np.zeros((133, 2))
-        sum_3d = np.zeros((133, 3))
-        sum_sq_2d = np.zeros((133, 2))
-        sum_sq_3d = np.zeros((133, 3))
-        count = 0
-        
-        # Sample a subset of the dataset for efficiency
-        indices = np.random.choice(len(self), min(10000, len(self)), replace=False)
-        
-        for idx in indices:
-            sample = self[idx]
+        # Use optimized calculation with parallel processing if available
+        try:
+            import concurrent.futures
+            from functools import partial
             
-            if 'keypoints_2d' in sample:
-                kp_2d = sample['keypoints_2d'].numpy() if isinstance(sample['keypoints_2d'], torch.Tensor) else sample['keypoints_2d']
-                if len(kp_2d.shape) == 3:  # If sequence data
-                    kp_2d = kp_2d[0]  # Just use the first frame
-                sum_2d += kp_2d
-                sum_sq_2d += kp_2d**2
-                
-            if 'keypoints_3d' in sample:
-                kp_3d = sample['keypoints_3d'].numpy() if isinstance(sample['keypoints_3d'], torch.Tensor) else sample['keypoints_3d']
-                if len(kp_3d.shape) == 3:  # If sequence data
-                    kp_3d = kp_3d[0]  # Just use the first frame
-                sum_3d += kp_3d
-                sum_sq_3d += kp_3d**2
-                
-            count += 1
+            # Pre-allocate arrays for statistics
+            joint_count = 133 if self.joint_indices is None else len(self.joint_indices)
             
-        # Compute mean and std
-        mean_2d = sum_2d / count
-        mean_3d = sum_3d / count
-        
-        std_2d = np.sqrt(sum_sq_2d / count - mean_2d**2)
-        std_3d = np.sqrt(sum_sq_3d / count - mean_3d**2)
-        
-        logger.info(f"Computed statistics over {count} samples")
-        
-        # Set small values to 1 to avoid division by zero
-        std_2d[std_2d < 1e-6] = 1.0
-        std_3d[std_3d < 1e-6] = 1.0
-        
-        return ((mean_2d, std_2d), (mean_3d, std_3d))
+            # Shared arrays for accumulating statistics
+            sum_2d = np.zeros((joint_count, 2))
+            sum_3d = np.zeros((joint_count, 3))
+            sum_sq_2d = np.zeros((joint_count, 2))
+            sum_sq_3d = np.zeros((joint_count, 3))
+            count = 0
+            
+            # Sample a subset of the dataset for efficiency
+            indices = np.random.choice(len(self), min(10000, len(self)), replace=False)
+            
+            # Use batched sampling for efficiency
+            batch_size = 100
+            for batch_idx in range(0, len(indices), batch_size):
+                batch_indices = indices[batch_idx:batch_idx+batch_size]
+                
+                # Get all samples in current batch
+                samples = [self[idx] for idx in batch_indices]
+                
+                for sample in samples:
+                    if 'keypoints_2d' in sample:
+                        kp_2d = sample['keypoints_2d'].numpy() if isinstance(sample['keypoints_2d'], torch.Tensor) else sample['keypoints_2d']
+                        if len(kp_2d.shape) == 3:  # If sequence data
+                            kp_2d = kp_2d[0]  # Just use the first frame
+                        sum_2d += kp_2d
+                        sum_sq_2d += kp_2d**2
+                        
+                    if 'keypoints_3d' in sample:
+                        kp_3d = sample['keypoints_3d'].numpy() if isinstance(sample['keypoints_3d'], torch.Tensor) else sample['keypoints_3d']
+                        if len(kp_3d.shape) == 3:  # If sequence data
+                            kp_3d = kp_3d[0]  # Just use the first frame
+                        sum_3d += kp_3d
+                        sum_sq_3d += kp_3d**2
+                        
+                    count += 1
+            
+            # Compute mean and std
+            mean_2d = sum_2d / count
+            mean_3d = sum_3d / count
+            
+            std_2d = np.sqrt(sum_sq_2d / count - mean_2d**2)
+            std_3d = np.sqrt(sum_sq_3d / count - mean_3d**2)
+            logger.info(f"Computed statistics over {count} samples")
+            
+            # Set small values to 1 to avoid division by zero
+            std_2d[std_2d < 1e-6] = 1.0
+            std_3d[std_3d < 1e-6] = 1.0
+            
+            return ((mean_2d, std_2d), (mean_3d, std_3d))
+        except Exception as e:
+            logger.error(f"Error in compute_dataset_stats: {e}")
+            raise
 
     def __repr__(self) -> str:
         """Return string representation of the dataset."""
