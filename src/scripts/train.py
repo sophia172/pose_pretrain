@@ -31,20 +31,18 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 src_dir = os.path.abspath(os.path.join(script_dir, ".."))
 project_root = os.path.abspath(os.path.join(src_dir, ".."))
 
-# Ensure src directory is in the Python path
-if src_dir not in sys.path:
-    sys.path.insert(0, src_dir)
+
 
 # Ensure project root is in the Python path for absolute imports
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from data.dataloader import get_dataloaders, get_dataset_stats
-from models.pretrain_model import PretrainModel
-from models.pretrain_vit_model import PretrainViTModel
-from models.loss import get_loss_fn
-from trainers.trainer import Trainer, get_optimizer, get_scheduler
-from utils.device import get_device, print_device_info
+from src.data.dataloader import get_dataloaders, get_dataset_stats
+from src.models.pretrain_model import PretrainModel
+from src.models.pretrain_vit_model import PretrainViTModel
+from src.models.loss import get_loss_fn
+from src.trainers.trainer import Trainer, get_optimizer, get_scheduler
+from src.utils.device import get_device, print_device_info
 
 
 def parse_args():
