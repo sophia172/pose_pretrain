@@ -102,82 +102,49 @@ class PretrainModel(nn.Module):
         
     def forward(
         self, 
-        x_2d: torch.Tensor,
-        x_3d: Optional[torch.Tensor] = None,
+        x_in: torch.Tensor,
         return_latent: bool = False
     ) -> Dict[str, torch.Tensor]:
         """
         Forward pass of the model.
         
         Args:
-            x_2d: 2D pose keypoints of shape (batch_size, num_joints, 2) or (batch_size, seq_len, num_joints, 2)
-            x_3d: Optional 3D pose keypoints for supervised learning
+            x_in:  pose keypoints of shape (batch_size, num_joints, 2) or (batch_size, seq_len, num_joints, 2)
+            x_out:  pose keypoints for supervised learning
             return_latent: Whether to return latent representation
             
         Returns:
             Dictionary with model outputs and losses
         """
         # Handle sequential data if needed
-        is_sequence = len(x_2d.shape) == 4
-        batch_size = x_2d.shape[0]
+        is_sequence = len(x_in.shape) == 4
+        batch_size = x_in.shape[0]
         
         if is_sequence:
             # Reshape to (batch_size * seq_len, num_joints, 2)
-            seq_len = x_2d.shape[1]
-            x_2d_flat = x_2d.reshape(-1, self.num_joints, self.input_dim)
+            seq_len = x_in.shape[1]
+            x_in_flat = x_in.reshape(-1, self.num_joints, self.input_dim)
             
             # Pass through encoder
-            latent = self.encoder(x_2d_flat)
+            latent = self.encoder(x_in_flat)
             
             # Pass through decoder
-            x_3d_pred_flat = self.decoder(latent)
+            x_out_pred_flat = self.decoder(latent)
             
             # Reshape back to sequence
-            x_3d_pred = x_3d_pred_flat.reshape(batch_size, seq_len, self.num_joints, self.output_dim)
+            x_out_pred = x_out_pred_flat.reshape(batch_size, seq_len, self.num_joints, self.output_dim)
             
             # Reshape latent if needed
             if return_latent:
                 latent = latent.reshape(batch_size, seq_len, self.num_joints, -1)
         else:
             # Standard forward pass for single frames
-            latent = self.encoder(x_2d)
-            x_3d_pred = self.decoder(latent)
-        
-        # Calculate losses if targets provided
-        loss_dict = {}
-        
-        if x_3d is not None:
-            # Reconstruction loss (L1 loss)
-            recon_loss = F.l1_loss(x_3d_pred, x_3d)
-            loss_dict['reconstruction_loss'] = recon_loss
-            
-            # Add consistency loss if weight > 0
-            if self.consistency_loss_weight > 0:
-                # Limb length consistency loss
-                consistency_loss = self._compute_consistency_loss(x_3d_pred, x_3d)
-                loss_dict['consistency_loss'] = consistency_loss * self.consistency_loss_weight
-                
-            # Add temporal smoothness loss if weight > 0 and input is a sequence
-            if self.smoothness_loss_weight > 0 and is_sequence:
-                # Temporal smoothness loss
-                smoothness_loss = self._compute_smoothness_loss(x_3d_pred)
-                loss_dict['smoothness_loss'] = smoothness_loss * self.smoothness_loss_weight
-                
-            # Compute total loss
-            total_loss = recon_loss
-            
-            if self.consistency_loss_weight > 0:
-                total_loss = total_loss + loss_dict['consistency_loss']
-                
-            if self.smoothness_loss_weight > 0 and is_sequence:
-                total_loss = total_loss + loss_dict['smoothness_loss']
-                
-            loss_dict['total_loss'] = total_loss
-        
+            latent = self.encoder(x_in)
+            x_out_pred = self.decoder(latent)
+      
         # Build result dictionary
         result = {
-            'pred_3d': x_3d_pred,
-            **loss_dict
+            'pred': x_out_pred,
         }
         
         if return_latent:
@@ -251,38 +218,38 @@ class PretrainModel(nn.Module):
         
         return loss
     
-    def encode(self, x_2d: torch.Tensor) -> torch.Tensor:
+    def encode(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Encode 2D pose keypoints to latent representations.
+        Encode pose keypoints to latent representations.
         
         Args:
-            x_2d: 2D pose keypoints of shape (batch_size, num_joints, 2) or (batch_size, seq_len, num_joints, 2)
+            x: pose keypoints of shape (batch_size, num_joints, 2) or (batch_size, seq_len, num_joints, 2)
             
         Returns:
             Latent representations
         """
-        is_sequence = len(x_2d.shape) == 4
-        batch_size = x_2d.shape[0]
+        is_sequence = len(x.shape) == 4
+        batch_size = x.shape[0]
         
         if is_sequence:
             # Handle sequential data
-            seq_len = x_2d.shape[1]
-            x_2d_flat = x_2d.reshape(-1, self.num_joints, self.input_dim)
-            latent = self.encoder(x_2d_flat)
+            seq_len = x.shape[1]
+            x_flat = x.reshape(-1, self.num_joints, self.input_dim)
+            latent = self.encoder(x_flat)
             return latent.reshape(batch_size, seq_len, self.num_joints, -1)
         else:
             # Handle single frames
-            return self.encoder(x_2d)
+            return self.encoder(x)
             
     def decode(self, latent: torch.Tensor) -> torch.Tensor:
         """
-        Decode latent representations to 3D pose keypoints.
+        Decode latent representations to pose keypoints.
         
         Args:
             latent: Latent representations
             
         Returns:
-            3D pose keypoints
+            pose keypoints
         """
         is_sequence = len(latent.shape) == 4
         batch_size = latent.shape[0]
@@ -291,23 +258,23 @@ class PretrainModel(nn.Module):
             # Handle sequential data
             seq_len = latent.shape[1]
             latent_flat = latent.reshape(-1, self.num_joints, -1)
-            x_3d_pred_flat = self.decoder(latent_flat)
-            return x_3d_pred_flat.reshape(batch_size, seq_len, self.num_joints, self.output_dim)
+            x_pred_flat = self.decoder(latent_flat)
+            return x_pred_flat.reshape(batch_size, seq_len, self.num_joints, self.output_dim)
         else:
             # Handle single frames
             return self.decoder(latent)
             
-    def predict_3d_from_2d(self, x_2d: torch.Tensor) -> torch.Tensor:
+    def predict(self, x_in: torch.Tensor) -> torch.Tensor:
         """
-        Predict 3D pose keypoints from 2D inputs.
+        Predict pose keypoints from inputs.
         
         Args:
-            x_2d: 2D pose keypoints
+            x_in: 2D or 3D pose keypoints
             
         Returns:
-            Predicted 3D pose keypoints
+            Predicted 2D or 3D pose keypoints
         """
-        return self.forward(x_2d)['pred_3d']
+        return self.forward(x_in)['pred']
         
     def get_config(self) -> Dict[str, Any]:
         """

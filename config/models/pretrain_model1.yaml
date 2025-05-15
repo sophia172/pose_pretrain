@@ -7,11 +7,6 @@ description: "Autoencoder-based unsupervised pretraining model for Human3.6M"
 architecture:
   type: "transformer"  # Options: mlp, cnn, transformer
   
-  # Input/Output dimensions
-  input_dim: 2  # 2D pose
-  output_dim: 3  # 3D pose
-  num_joints: 133
-  
   # Encoder (2D to latent)
   encoder:
     type: "transformer"
@@ -27,7 +22,7 @@ architecture:
   # Decoder (latent to 3D)
   decoder:
     type: "transformer"
-    hidden_dims: [512, 1024]
+    hidden_dims: [1024, 1024]
     num_layers: 4
     num_heads: 8
     dropout: 0.1
@@ -46,50 +41,11 @@ architecture:
     num_layers: 2
     bidirectional: true
 
-# Training specifics for this model
-training:
-  batch_size: 64
-  learning_rate: 0.0001
-  weight_decay: 0.0001
-  
-  # Learning rate scheduler
-  lr_scheduler:
-    type: "cosine"
-    warmup_epochs: 5
-  
-  # Specialized losses for pretraining
-  losses:
-    reconstruction:
-      weight: 1.0
-      type: "l1"
-    consistency:
-      weight: 0.5
-      type: "cosine"  # For consistency between different augmentations
-    smoothness:
-      weight: 0.1
-      type: "l1"  # Temporal smoothness loss
-  
-  # Adversarial training (if used)
-  adversarial:
-    enabled: false
-    discriminator:
-      hidden_dims: [512, 256]
-      learning_rate: 0.0001
-    generator_weight: 0.01
-
 # Initialization
 initialization:
   type: "xavier"  # Options: normal, xavier, kaiming
   gain: 1.0
 
-# Optimization settings
-optimizer:
-  type: "adam"  # Options: sgd, adam, adamw
-  beta1: 0.9
-  beta2: 0.999
-  
-# Regularization
+# Only model-specific regularization here
 regularization:
   dropout: 0.1
-  weight_decay: 0.0001
-  gradient_clip: 1.0 

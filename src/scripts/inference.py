@@ -234,14 +234,14 @@ def process_single_input(model: PretrainModel, input_path: str, output_dir: str,
             results = []
             for frame_idx in range(len(keypoints_2d)):
                 frame_keypoints = keypoints_2d[frame_idx:frame_idx+1]
-                prediction = model.predict_3d_from_2d(frame_keypoints)
+                prediction = model.predict(frame_keypoints)
                 results.append(prediction)
                 
             # Combine results
             keypoints_3d = torch.cat(results, dim=0)
         else:
             # Process single frame
-            keypoints_3d = model.predict_3d_from_2d(keypoints_2d.unsqueeze(0))
+            keypoints_3d = model.predict(keypoints_2d.unsqueeze(0))
             keypoints_3d = keypoints_3d.squeeze(0)
     
     # Save results

@@ -162,6 +162,8 @@ class LimbConsistencyLoss(nn.Module):
             self.loss_fn = F.mse_loss
         elif self.loss_type == "huber":
             self.loss_fn = F.smooth_l1_loss
+        elif self.loss_type == "cosine":
+            self.loss_fn = F.cosine_similarity
         else:
             raise ValueError(f"Unsupported loss type: {loss_type}")
             
@@ -494,12 +496,29 @@ class TotalLoss(nn.Module):
         self.smoothness_weight = smoothness_weight
         self.angle_weight = angle_weight
         
+        # For storing loss components
+        self.last_loss_components = {}
+        
+        # Build human-readable description of the combined loss
+        desc_parts = [f"{recon_weight:.2f}*{self.reconstruction_loss.__class__.__name__}"]
+        
+        if self.consistency_loss is not None and consistency_weight > 0:
+            desc_parts.append(f"{consistency_weight:.2f}*{self.consistency_loss.__class__.__name__}")
+            
+        if self.smoothness_loss is not None and smoothness_weight > 0:
+            desc_parts.append(f"{smoothness_weight:.2f}*{self.smoothness_loss.__class__.__name__}")
+            
+        if self.joint_angle_loss is not None and angle_weight > 0:
+            desc_parts.append(f"{angle_weight:.2f}*{self.joint_angle_loss.__class__.__name__}")
+            
+        self.description = " + ".join(desc_parts)
+        
     def forward(
         self, 
         pred: torch.Tensor, 
         target: torch.Tensor,
         mask: Optional[torch.Tensor] = None
-    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+    ) -> torch.Tensor:
         """
         Compute total loss.
         
@@ -509,7 +528,7 @@ class TotalLoss(nn.Module):
             mask: Optional mask for valid joints/frames
             
         Returns:
-            Tuple of (total_loss, loss_components_dict)
+            Total loss value
         """
         loss_components = {}
         
@@ -539,7 +558,19 @@ class TotalLoss(nn.Module):
             
         loss_components["total"] = total_loss
         
-        return total_loss, loss_components
+        # Store the loss components for later retrieval
+        self.last_loss_components = loss_components
+        
+        return total_loss
+    
+    def get_loss_components(self) -> Dict[str, torch.Tensor]:
+        """
+        Get the components of the last computed loss.
+        
+        Returns:
+            Dictionary containing individual loss components
+        """
+        return self.last_loss_components
 
 
 def get_loss_fn(config: Dict[str, Any]) -> nn.Module:
@@ -552,15 +583,26 @@ def get_loss_fn(config: Dict[str, Any]) -> nn.Module:
     Returns:
         Loss module
     """
-    loss_config = config.get("loss", {})
-    loss_type = loss_config.get("type", "l1")
-    loss_weights = loss_config.get("weights", {})
+    training_config = config.get("training", {})
+    losses_config = training_config.get("losses", {})
+    
+    # Get reconstruction loss settings
+    reconstruction_config = losses_config.get("reconstruction", {})
+    loss_type = reconstruction_config.get("type", "l1")
     
     # Extract weights with defaults
-    recon_weight = loss_weights.get("reconstruction", 1.0)
-    consistency_weight = loss_weights.get("consistency", 0.5)
-    smoothness_weight = loss_weights.get("smoothness", 0.1)
-    angle_weight = loss_weights.get("joint_angle", 0.0)
+    recon_weight = reconstruction_config.get("weight", 1.0)
+    
+    # Get other loss weights
+    consistency_config = losses_config.get("consistency", {})
+    consistency_weight = consistency_config.get("weight", 0.5)
+    
+    smoothness_config = losses_config.get("smoothness", {})
+    smoothness_weight = smoothness_config.get("weight", 0.1)
+    
+    # Joint angle loss is optional
+    angle_config = losses_config.get("joint_angle", {})
+    angle_weight = angle_config.get("weight", 0.0)
     
     # Create individual loss components
     reconstruction_loss = ReconstructionLoss(loss_type=loss_type)
@@ -568,22 +610,22 @@ def get_loss_fn(config: Dict[str, Any]) -> nn.Module:
     # Limb consistency loss (if weight > 0)
     consistency_loss = None
     if consistency_weight > 0:
-        consistency_loss = LimbConsistencyLoss(loss_type=loss_type)
+        consistency_loss = LimbConsistencyLoss(loss_type=consistency_config.get("type", loss_type))
     
     # Temporal smoothness loss (if weight > 0)
     smoothness_loss = None
     if smoothness_weight > 0:
-        smoothness_loss = TemporalSmoothnessLoss(loss_type=loss_type)
+        smoothness_loss = TemporalSmoothnessLoss(loss_type=smoothness_config.get("type", loss_type))
     
     # Joint angle loss (if weight > 0 and configurations provided)
     joint_angle_loss = None
-    if angle_weight > 0 and "joint_chains" in loss_config:
-        joint_chains = loss_config["joint_chains"]
-        angle_limits = loss_config.get("angle_limits")
+    if angle_weight > 0 and "joint_chains" in angle_config:
+        joint_chains = angle_config["joint_chains"]
+        angle_limits = angle_config.get("angle_limits")
         joint_angle_loss = JointAngleLoss(
             joint_chains=joint_chains,
             angle_limits=angle_limits,
-            loss_type=loss_type
+            loss_type=angle_config.get("type", loss_type)
         )
     
     # Combine into total loss

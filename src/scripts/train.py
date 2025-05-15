@@ -116,10 +116,11 @@ def create_model(config: Dict[str, Any], model_type: str = "transformer") -> nn.
     model_config = config.get("model", {})
     model_config = load_config(model_config.get("config_file", "config/models/pretrain_model1.yaml"))
     architecture = model_config.get("architecture", {})
+    
     # Get model parameters
-    num_joints = architecture.get("num_joints", 133)
-    input_dim = architecture.get("input_dim", 2)
-    output_dim = architecture.get("output_dim", 3)
+    num_joints = config.get("num_joints", 133)
+    input_dim = config.get("input_dim", 2)
+    output_dim = config.get("output_dim", 3)
     
     print(f"{Fore.GREEN}🔨 Building {model_type.upper()} model with:")
     print(f"{Fore.GREEN}   - {num_joints} joints")
@@ -143,8 +144,9 @@ def create_model(config: Dict[str, Any], model_type: str = "transformer") -> nn.
         use_joint_relations = vit_config.get("use_joint_relations", True)
         
         # Loss weights
-        consistency_loss_weight = model_config.get("consistency_loss_weight", 0.5)
-        smoothness_loss_weight = model_config.get("smoothness_loss_weight", 0.1)
+        loss_config = model_config.get("training", {}).get("losses", {})
+        consistency_loss_weight = loss_config.get("consistency", {}).get("weight", 0.5)
+        smoothness_loss_weight = loss_config.get("smoothness", {}).get("weight", 0.1)
         
         # Print ViT specifics
         print(f"{Fore.GREEN}   - ViT specs: {encoder_depth} encoder layers, {decoder_depth} decoder layers, {num_heads} heads")
@@ -171,23 +173,26 @@ def create_model(config: Dict[str, Any], model_type: str = "transformer") -> nn.
         # Standard transformer model
         latent_dim = architecture.get("latent", {}).get("dim", 256)
         
-        encoder_hidden_dims = architecture.get("encoder", {}).get("hidden_dims", [1024, 512])
-        num_encoder_layers = architecture.get("encoder", {}).get("num_layers", 4)
-        num_encoder_heads = architecture.get("encoder", {}).get("num_heads", 8)
-        decoder_hidden_dims = architecture.get("decoder", {}).get("hidden_dims", [1024, 512])
-        num_decoder_layers = architecture.get("decoder", {}).get("num_layers", 4)
-        num_decoder_heads = architecture.get("decoder", {}).get("num_heads", 4)
+        encoder_config = architecture.get("encoder", {})
+        decoder_config = architecture.get("decoder", {})
+        encoder_hidden_dims = encoder_config.get("hidden_dims", [1024, 512])
+        num_encoder_layers = encoder_config.get("num_layers", 4)
+        num_encoder_heads = encoder_config.get("num_heads", 8)
+        decoder_hidden_dims = decoder_config.get("hidden_dims", [1024, 512])
+        num_decoder_layers = decoder_config.get("num_layers", 4)
+        num_decoder_heads = decoder_config.get("num_heads", 4)
         
-        dropout = architecture.get("decoder", {}).get("dropout", 0.1)
-        activation = architecture.get("decoder", {}).get("activation", "gelu")
+        dropout = decoder_config.get("dropout", 0.1)
+        activation = decoder_config.get("activation", "gelu")
         
         # Additional features
         use_positional_encoding = architecture.get("positional_encoding", True)
         use_joint_relations = architecture.get("use_joint_relations", True)
         
         # Loss weights
-        consistency_loss_weight = model_config.get("consistency_loss_weight", 0.5)
-        smoothness_loss_weight = model_config.get("smoothness_loss_weight", 0.1)
+        loss_config = model_config.get("training", {}).get("losses", {})
+        consistency_loss_weight = loss_config.get("consistency", {}).get("weight", 0.5)
+        smoothness_loss_weight = loss_config.get("smoothness", {}).get("weight", 0.1)
         
         # Print transformer specifics
         print(f"{Fore.GREEN}   - Transformer specs: {num_encoder_layers} encoder layers, {num_decoder_layers} decoder layers")
@@ -363,28 +368,30 @@ def main():
     # Create optimizer
     print(f"{Fore.CYAN}🔧 Creating optimizer...")
     optimizer = get_optimizer(model, config)
-    optimizer_type = config.get("optimizer", {}).get("type", "adam")
-    lr = config.get("optimizer", {}).get("learning_rate", 0.0001)
+    training_config = config.get("training", {})
+    optimizer_config = training_config.get("optimizer", {})
+    optimizer_type = optimizer_config.get("type", "adam")
+    lr = training_config.get("learning_rate", 0.0001)
     print(f"{Fore.GREEN}✓ Using {optimizer_type.upper()} optimizer with learning rate {lr}")
     
     # Create scheduler
     scheduler = get_scheduler(optimizer, config)
     if scheduler:
-        scheduler_type = config.get("training", {}).get("lr_scheduler", {}).get("type", "none")
+        lr_scheduler_config = training_config.get("lr_scheduler", {})
+        scheduler_type = lr_scheduler_config.get("type", "none")
         print(f"{Fore.GREEN}✓ Using {scheduler_type.upper()} learning rate scheduler")
     else:
         print(f"{Fore.YELLOW}ℹ️ No learning rate scheduler specified")
     
     # Create loss function
     loss_fn = get_loss_fn(config)
-    loss_type = config.get("training", {}).get("losses", {}).get("reconstruction", {}).get("type", "l1")
-    print(f"{Fore.GREEN}✓ Using {loss_type.upper()} loss function")
+    print(f"{Fore.GREEN}✓ Using loss function: {loss_fn.description}")
     
     # Print progress header for training setup
     print_progress_header("Training Setup")
     
     # Training parameters
-    epochs = config["training"]["epochs"]
+    epochs = training_config.get("epochs", 100)
     print(f"{Fore.CYAN}🔄 Training for {epochs} epochs")
     
     if args.resume:
@@ -406,14 +413,14 @@ def main():
         output_dir=output_dir,
         experiment_name=experiment_name,
         max_epochs=epochs,
-        clip_grad_norm=config["training"].get("clip_grad_norm"),
+        clip_grad_norm=training_config.get("grad_clip"),
         save_every=config["experiment"].get("save_every", 10),
         log_every=config["experiment"].get("log_every", 100),
         val_every=config["experiment"].get("val_every", 1),
         save_best=config["experiment"].get("save_best", True),
-        early_stopping_patience=config["experiment"].get("early_stopping_patience"),
+        early_stopping_patience=training_config.get("early_stopping", {}).get("patience"),
         resume_from=args.resume,
-        mixed_precision=config["experiment"].get("mixed_precision", False),
+        mixed_precision=training_config.get("mixed_precision", False),
         progress_fn=update_progress
     )
     

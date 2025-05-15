@@ -20,7 +20,7 @@ paths:
 data:
   dataset: "h36m"  # Options: h36m, mpi_inf_3dhp
   config_file: "config/data/h36m.yaml"
-  batch_size: 16
+  batch_size: 512
   num_workers: 4
   pin_memory: true
   shuffle: true
@@ -31,34 +31,50 @@ data:
 
 input_type: "keypoints_2d"
 target_type: "keypoints_3d"
+# Input/Output dimensions
+input_dim: 2  # 2D pose
+output_dim: 3  # 3D pose
+num_joints: 133
+
 # Model configuration
 model:
   name: "pretrain_model"
   config_file: "config/models/pretrain_model1.yaml"
-  
-# Training configuration
+
 training:
-  epochs: 100
-  optimizer: "adam"  # Options: adam, sgd
-  learning_rate: 0.001
+  epochs: 1
+  learning_rate: 0.0001
   weight_decay: 0.0001
-  lr_scheduler: "cosine"  # Options: step, cosine, plateau
-  lr_step_size: 30
-  lr_gamma: 0.1
-  early_stopping:
-    patience: 10
-    min_delta: 0.0001
   grad_clip: 1.0
   mixed_precision: true
   resume: false
-
-# Loss configuration
-loss:
-  type: "l1"  # Options: l1, mse, huber
-  weights:
-    reconstruction: 1.0
-    consistency: 0.5
-    smoothness: 0.1
+  early_stopping:
+    patience: 10
+    min_delta: 0.0001
+  optimizer:
+    type: "adam"
+    beta1: 0.9
+    beta2: 0.999
+  lr_scheduler:
+    type: "cosine"
+    warmup_epochs: 5
+  losses:
+    reconstruction:
+      weight: 1.0
+      type: "l1"
+    consistency:
+      weight: 0.5
+      type: "cosine"
+    smoothness:
+      weight: 0.1
+      type: "l1"
+  adversarial:
+    enabled: false
+    discriminator:
+      hidden_dims: [512, 256]
+      learning_rate: 0.0001
+    generator_weight: 0.01
+  
 
 # Logging and monitoring
 logging:

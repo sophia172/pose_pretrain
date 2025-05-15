@@ -366,7 +366,7 @@ def evaluate_model(
                 keypoints_3d = keypoints_3d.to(device)
             
             # Run inference
-            predictions = model.predict_3d_from_2d(keypoints_2d)
+            predictions = model.predict(keypoints_2d)
             
             # Store results
             all_predictions.append(predictions.cpu())

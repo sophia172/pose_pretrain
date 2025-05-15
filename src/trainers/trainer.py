@@ -277,7 +277,7 @@ class Trainer:
         # Track metrics
         total_loss = 0.0
         samples_count = 0
-        
+        criterion = self.loss_fn
         # Set up progress tracking
         start_time = time.time()
         num_batches = len(self.train_loader)
@@ -293,7 +293,7 @@ class Trainer:
             inputs = batch[self.config.get("input_type", "keypoints_2d")].to(self.device)
             logger.debug(f"Input shape: {inputs.shape}")
             
-            if self.config["target_type"] in batch:
+            if self.config.get("target_type", "keypoints_2d") in batch:
                 logger.debug("Moving target data to device")
                 targets = batch[self.config.get("target_type", "keypoints_2d")].to(self.device)
                 logger.debug(f"Target shape: {targets.shape}")
@@ -310,23 +310,17 @@ class Trainer:
                 logger.debug("Using mixed precision training")
                 with torch.cuda.amp.autocast():
                     logger.debug("Forward pass with mixed precision")
-                    outputs = self.model(inputs, targets) if targets is not None else self.model(inputs)
+                    outputs = self.model(inputs)
                     logger.debug(f"Model output keys: {outputs.keys() if isinstance(outputs, dict) else 'tensor'}")
                     
-                    if self.loss_fn is not None:
-                        logger.debug("Computing loss using provided loss function")
-                        # If outputs is a dictionary, use the total_loss from the model
-                        if isinstance(outputs, dict):
-                            loss = outputs['total_loss']
-                            logger.debug(f"Using model's total_loss: {loss.item():.4f}")
-                        else:
-                            loss = self.loss_fn(outputs, targets)
-                            logger.debug(f"Computed loss using loss_fn: {loss.item():.4f}")
+                    # If outputs is a dictionary, extract the predictions
+                    if isinstance(outputs, dict) and 'pred' in outputs:
+                        loss = criterion(outputs['pred'], targets)
                     else:
-                        logger.debug("Using model's computed loss")
-                        loss = outputs["total_loss"] if "total_loss" in outputs else outputs["loss"]
-                        logger.debug(f"Using model's loss: {loss.item():.4f}")
-                
+                        loss = criterion(outputs, targets)
+                    
+                    logger.debug(f"Computed loss using criterion: {loss.item():.4f}")
+                    
                 # Backward pass with scaler
                 logger.debug("Backward pass with gradient scaler")
                 self.scaler.scale(loss).backward()
@@ -345,23 +339,17 @@ class Trainer:
                 logger.debug("Using standard precision training")
                 # Standard forward pass
                 logger.debug("Forward pass")
-                outputs = self.model(inputs, targets) if targets is not None else self.model(inputs)
+                outputs = self.model(inputs)
                 logger.debug(f"Model output keys: {outputs.keys() if isinstance(outputs, dict) else 'tensor'}")
                 
-                if self.loss_fn is not None:
-                    logger.debug("Computing loss using provided loss function")
-                    # If outputs is a dictionary, use the total_loss from the model
-                    if isinstance(outputs, dict):
-                        loss = outputs['total_loss']
-                        logger.debug(f"Using model's total_loss: {loss.item():.4f}")
-                    else:
-                        loss = self.loss_fn(outputs, targets)
-                        logger.debug(f"Computed loss using loss_fn: {loss.item():.4f}")
+                # If outputs is a dictionary, extract the predictions
+                if isinstance(outputs, dict) and 'pred' in outputs:
+                    loss = criterion(outputs['pred'], targets)
                 else:
-                    logger.debug("Using model's computed loss")
-                    loss = outputs["total_loss"] if "total_loss" in outputs else outputs["loss"]
-                    logger.debug(f"Using model's loss: {loss.item():.4f}")
-                
+                    loss = criterion(outputs, targets)
+                    
+                logger.debug(f"Computed loss using criterion: {loss.item():.4f}")
+              
                 # Backward pass
                 logger.debug("Backward pass")
                 loss.backward()
@@ -375,7 +363,7 @@ class Trainer:
                 logger.debug("Optimizer step")
                 self.optimizer.step()
             
-            # Update metrics
+            # Update metrics - use item() to avoid accumulating gradients
             batch_size = inputs.size(0)
             samples_count += batch_size
             total_loss += loss.item() * batch_size
@@ -384,8 +372,9 @@ class Trainer:
             # Log batch metrics
             if batch_idx % self.log_every == 0:
                 batch_time = time.time() - start_time
+                current_avg_loss = total_loss / samples_count if samples_count > 0 else 0.0
                 logger.info(f"Epoch {epoch+1}/{self.max_epochs} [{batch_idx}/{len(self.train_loader)}] "
-                           f"Loss: {loss.item():.4f} Time: {batch_time:.2f}s")
+                           f"Loss: {loss.item():.4f} Avg: {current_avg_loss:.4f} Time: {batch_time:.2f}s")
                 start_time = time.time()
             
             # Call batch end callback
@@ -437,16 +426,19 @@ class Trainer:
                 targets = batch["target"].to(self.device) if "target" in batch else None
                 
                 # Forward pass
-                outputs = self.model(inputs, targets) if targets is not None else self.model(inputs)
+                outputs = self.model(inputs)
                 
                 # Calculate loss
-                if self.loss_fn is not None:
-                    loss = self.loss_fn(outputs, targets)
-                else:
-                    # If no loss function is provided, use the model's computed loss
-                    loss = outputs["total_loss"] if "total_loss" in outputs else outputs["loss"]
                 
-                # Update metrics
+                if isinstance(outputs, dict) and 'pred' in outputs:
+                    loss = self.loss_fn(outputs['pred'], targets)
+                else:
+                    loss = self.loss_fn(outputs, targets)
+                
+                # Log validation loss
+                logger.debug(f"Validation batch loss: {loss.item():.4f}")
+                
+                # Update metrics - use item() to avoid accumulating tensors
                 batch_size = inputs.size(0)
                 samples_count += batch_size
                 total_loss += loss.item() * batch_size
@@ -565,31 +557,30 @@ class Trainer:
                 targets = batch["target"].to(self.device) if "target" in batch else None
                 
                 # Forward pass
-                outputs = self.model(inputs, targets) if targets is not None else self.model(inputs)
+                outputs = self.model(inputs)
                 
                 # Get predictions
                 if isinstance(outputs, dict):
-                    predictions = outputs.get("pred", outputs.get("pred_3d", None))
+                    predictions = outputs.get("pred", None)
                 else:
                     predictions = outputs
                 
                 # Calculate loss
-                if self.loss_fn is not None:
-                    loss = self.loss_fn(outputs, targets)
-                elif "total_loss" in outputs:
-                    loss = outputs["total_loss"]
-                elif "loss" in outputs:
-                    loss = outputs["loss"]
+                # Check if outputs is a dictionary and extract predictions
+                if isinstance(outputs, dict) and 'pred' in outputs:
+                    loss = self.loss_fn(outputs['pred'], targets)
                 else:
-                    # Fallback to mean squared error
-                    loss = torch.nn.functional.mse_loss(predictions, targets)
+                    loss = self.loss_fn(outputs, targets)
+                    
+                logger.debug(f"Test batch loss: {loss.item():.4f}")
+                
                 
                 # Calculate prediction error
                 if targets is not None and predictions is not None:
                     pred_error = torch.mean(torch.norm(predictions - targets, dim=-1))
                     total_pred_errors += pred_error.item() * inputs.size(0)
                 
-                # Update metrics
+                # Update metrics - use item() to avoid accumulating tensors
                 batch_size = inputs.size(0)
                 samples_count += batch_size
                 total_loss += loss.item() * batch_size
