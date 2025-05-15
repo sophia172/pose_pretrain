@@ -9,7 +9,7 @@ experiment:
 
 # Paths
 paths:
-  dataset: "ML dataset"
+  dataset: "ML dataset" #../drive/Shareddrives/SWEE/- AI Division/Database
   output_dir: "outputs"
   model_dir: "${paths.output_dir}/models"
   log_dir: "${paths.output_dir}/logs"
@@ -64,7 +64,7 @@ training:
       type: "l1"
     consistency:
       weight: 0.5
-      type: "cosine"
+      type: "huber"
     smoothness:
       weight: 0.1
       type: "l1"

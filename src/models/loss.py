@@ -162,8 +162,6 @@ class LimbConsistencyLoss(nn.Module):
             self.loss_fn = F.mse_loss
         elif self.loss_type == "huber":
             self.loss_fn = F.smooth_l1_loss
-        elif self.loss_type == "cosine":
-            self.loss_fn = F.cosine_similarity
         else:
             raise ValueError(f"Unsupported loss type: {loss_type}")
             
