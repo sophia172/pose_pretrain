@@ -18,18 +18,20 @@ class ReconstructionLoss(nn.Module):
     predicted and target 3D poses.
     """
     
-    def __init__(self, loss_type: str = "l1", reduction: str = "mean"):
+    def __init__(self, loss_type: str = "l1", reduction: str = "mean", epsilon: float = 1e-8):
         """
         Initialize reconstruction loss.
         
         Args:
             loss_type: Type of loss ("l1", "mse", "huber", "wing")
             reduction: Reduction method ("mean", "sum", "none")
+            epsilon: Small value to prevent numerical instability
         """
         super().__init__()
         
         self.loss_type = loss_type.lower()
         self.reduction = reduction
+        self.epsilon = epsilon
         
         # Setup loss function based on type
         if self.loss_type == "l1":
@@ -41,7 +43,7 @@ class ReconstructionLoss(nn.Module):
         elif self.loss_type == "wing":
             # Wing loss parameters
             self.wing_w = 10.0
-            self.wing_epsilon = 2.0
+            self.wing_epsilon = max(2.0, epsilon)  # Ensure positive value
         else:
             raise ValueError(f"Unsupported loss type: {loss_type}")
             
@@ -71,8 +73,10 @@ class ReconstructionLoss(nn.Module):
                     
                     # Apply mask and reduce
                     loss = loss * mask
+                    mask_sum = mask.sum().clamp(min=self.epsilon)  # Prevent division by zero
+                    
                     if self.reduction == "mean":
-                        return loss.sum() / mask.sum() if mask.sum() > 0 else loss.sum() * 0.0
+                        return loss.sum() / mask_sum
                     else:  # sum
                         return loss.sum()
             else:
@@ -85,21 +89,25 @@ class ReconstructionLoss(nn.Module):
             # Apply wing loss formula
             c = self.wing_w * (1.0 - torch.log(1.0 + self.wing_w / self.wing_epsilon))
             
+            # Clamp input to logarithm to prevent NaN
+            safe_input = (abs_diff / self.wing_epsilon).clamp(min=0, max=1e6)
+            
             # Calculate loss using the wing loss formula
             wing_loss = torch.where(
                 abs_diff < self.wing_w,
-                self.wing_w * torch.log(1.0 + abs_diff / self.wing_epsilon),
+                self.wing_w * torch.log(1.0 + safe_input),
                 abs_diff - c
             )
             
             # Apply mask if provided
             if mask is not None:
                 wing_loss = wing_loss * mask
+                mask_sum = mask.sum().clamp(min=self.epsilon)  # Prevent division by zero
                 
             # Apply reduction
             if self.reduction == "mean":
                 if mask is not None:
-                    return wing_loss.sum() / mask.sum() if mask.sum() > 0 else wing_loss.sum() * 0.0
+                    return wing_loss.sum() / mask_sum
                 else:
                     return wing_loss.mean()
             elif self.reduction == "sum":
@@ -234,7 +242,8 @@ class TemporalSmoothnessLoss(nn.Module):
         loss_type: str = "l1",
         reduction: str = "mean",
         velocity_weight: float = 1.0,
-        acceleration_weight: float = 1.0
+        acceleration_weight: float = 1.0,
+        epsilon: float = 1e-8
     ):
         """
         Initialize temporal smoothness loss.
@@ -244,6 +253,7 @@ class TemporalSmoothnessLoss(nn.Module):
             reduction: Reduction method ("mean", "sum", "none")
             velocity_weight: Weight for velocity smoothness term
             acceleration_weight: Weight for acceleration smoothness term
+            epsilon: Small value to prevent numerical instability
         """
         super().__init__()
         
@@ -251,6 +261,7 @@ class TemporalSmoothnessLoss(nn.Module):
         self.reduction = reduction
         self.velocity_weight = velocity_weight
         self.acceleration_weight = acceleration_weight
+        self.epsilon = epsilon
         
         # Setup loss function
         if self.loss_type == "l1":
@@ -304,8 +315,8 @@ class TemporalSmoothnessLoss(nn.Module):
             acceleration_loss = acceleration_loss * acceleration_mask.unsqueeze(-1).unsqueeze(-1)
             
             # Count number of valid entries for mean reduction
-            valid_velocity_entries = velocity_mask.sum()
-            valid_acceleration_entries = acceleration_mask.sum()
+            valid_velocity_entries = velocity_mask.sum().clamp(min=self.epsilon)
+            valid_acceleration_entries = acceleration_mask.sum().clamp(min=self.epsilon)
         else:
             # All entries are valid
             valid_velocity_entries = batch_size * (seq_len - 1) * num_joints
@@ -313,8 +324,8 @@ class TemporalSmoothnessLoss(nn.Module):
             
         # Compute mean or sum based on reduction type
         if self.reduction == "mean":
-            velocity_term = velocity_loss.sum() / valid_velocity_entries if valid_velocity_entries > 0 else 0.0
-            acceleration_term = acceleration_loss.sum() / valid_acceleration_entries if valid_acceleration_entries > 0 else 0.0
+            velocity_term = velocity_loss.sum() / valid_velocity_entries
+            acceleration_term = acceleration_loss.sum() / valid_acceleration_entries
         elif self.reduction == "sum":
             velocity_term = velocity_loss.sum()
             acceleration_term = acceleration_loss.sum()
@@ -322,7 +333,9 @@ class TemporalSmoothnessLoss(nn.Module):
             return self.velocity_weight * velocity_loss, self.acceleration_weight * acceleration_loss
             
         # Combine weighted terms
-        return self.velocity_weight * velocity_term + self.acceleration_weight * acceleration_term
+        combined_loss = self.velocity_weight * velocity_term + self.acceleration_weight * acceleration_term
+        
+        return combined_loss
 
 
 class JointAngleLoss(nn.Module):
@@ -337,7 +350,8 @@ class JointAngleLoss(nn.Module):
         joint_chains: List[Tuple[int, int, int]],
         angle_limits: Optional[List[Tuple[float, float]]] = None,
         loss_type: str = "l1",
-        reduction: str = "mean"
+        reduction: str = "mean",
+        epsilon: float = 1e-8
     ):
         """
         Initialize joint angle loss.
@@ -347,6 +361,7 @@ class JointAngleLoss(nn.Module):
             angle_limits: Optional list of (min_angle, max_angle) in radians for each joint chain
             loss_type: Type of loss ("l1", "mse", "huber")
             reduction: Reduction method ("mean", "sum", "none")
+            epsilon: Small value to prevent numerical instability
         """
         super().__init__()
         
@@ -354,6 +369,7 @@ class JointAngleLoss(nn.Module):
         self.angle_limits = angle_limits
         self.loss_type = loss_type.lower()
         self.reduction = reduction
+        self.epsilon = epsilon
         
         # If no angle limits provided, use default range (0, π)
         if self.angle_limits is None:
@@ -401,19 +417,40 @@ class JointAngleLoss(nn.Module):
             v1 = poses_flat[:, parent, :] - poses_flat[:, joint, :]  # parent -> joint
             v2 = poses_flat[:, child, :] - poses_flat[:, joint, :]   # joint -> child
             
-            # Normalize vectors
-            v1_norm = F.normalize(v1, p=2, dim=-1)
-            v2_norm = F.normalize(v2, p=2, dim=-1)
+            # Check for zero vectors and add epsilon to prevent NaN in normalization
+            v1_norm_sq = torch.sum(v1 * v1, dim=-1, keepdim=True)
+            v2_norm_sq = torch.sum(v2 * v2, dim=-1, keepdim=True)
             
-            # Calculate angle using dot product
-            # cos_angle = torch.sum(v1_norm * v2_norm, dim=-1)
-            # angle = torch.acos(torch.clamp(cos_angle, -1.0 + 1e-6, 1.0 - 1e-6))
+            # Skip normalization for zero vectors
+            v1_is_zero = v1_norm_sq < self.epsilon
+            v2_is_zero = v2_norm_sq < self.epsilon
             
-            # Alternative: calculate angle using cross product (more stable)
+            # Replace zero vectors with unit vectors to avoid NaN
+            safe_v1 = torch.where(v1_is_zero, torch.tensor([1.0, 0.0, 0.0], device=poses.device), v1)
+            safe_v2 = torch.where(v2_is_zero, torch.tensor([0.0, 1.0, 0.0], device=poses.device), v2)
+            
+            # Normalize vectors with epsilon for numerical stability
+            v1_norm = safe_v1 / torch.sqrt(torch.sum(safe_v1 * safe_v1, dim=-1, keepdim=True) + self.epsilon)
+            v2_norm = safe_v2 / torch.sqrt(torch.sum(safe_v2 * safe_v2, dim=-1, keepdim=True) + self.epsilon)
+            
+            _validate_tensor(v1_norm, "v1_norm")
+            _validate_tensor(v2_norm, "v2_norm")
+            
+            # Calculate angle using cross product (more stable)
             cross_prod = torch.cross(v1_norm, v2_norm, dim=-1)
             cross_norm = torch.norm(cross_prod, dim=-1)
             dot_prod = torch.sum(v1_norm * v2_norm, dim=-1)
-            angle = torch.atan2(cross_norm, dot_prod)
+            
+            # Clamp dot product to valid range for numerical stability
+            dot_prod_clamped = torch.clamp(dot_prod, -1.0 + self.epsilon, 1.0 - self.epsilon)
+            
+            # Calculate angle, handle cases where both vectors are zero
+            valid_angle = torch.atan2(cross_norm, dot_prod_clamped)
+            angle = torch.where(
+                v1_is_zero.squeeze(-1) | v2_is_zero.squeeze(-1),
+                torch.zeros_like(valid_angle),  # Zero angle for zero vectors
+                valid_angle
+            )
             
             angles.append(angle)
             angle_limits_tensor.append(torch.tensor([self.angle_limits[i][0], self.angle_limits[i][1]], 
@@ -587,6 +624,7 @@ def get_loss_fn(config: Dict[str, Any]) -> nn.Module:
     # Get reconstruction loss settings
     reconstruction_config = losses_config.get("reconstruction", {})
     loss_type = reconstruction_config.get("type", "l1")
+    epsilon = reconstruction_config.get("epsilon", 1e-8)
     
     # Extract weights with defaults
     recon_weight = reconstruction_config.get("weight", 1.0)
@@ -603,7 +641,7 @@ def get_loss_fn(config: Dict[str, Any]) -> nn.Module:
     angle_weight = angle_config.get("weight", 0.0)
     
     # Create individual loss components
-    reconstruction_loss = ReconstructionLoss(loss_type=loss_type)
+    reconstruction_loss = ReconstructionLoss(loss_type=loss_type, epsilon=epsilon)
     
     # Limb consistency loss (if weight > 0)
     consistency_loss = None
@@ -613,7 +651,10 @@ def get_loss_fn(config: Dict[str, Any]) -> nn.Module:
     # Temporal smoothness loss (if weight > 0)
     smoothness_loss = None
     if smoothness_weight > 0:
-        smoothness_loss = TemporalSmoothnessLoss(loss_type=smoothness_config.get("type", loss_type))
+        smoothness_loss = TemporalSmoothnessLoss(
+            loss_type=smoothness_config.get("type", loss_type),
+            epsilon=smoothness_config.get("epsilon", epsilon)
+        )
     
     # Joint angle loss (if weight > 0 and configurations provided)
     joint_angle_loss = None
@@ -623,7 +664,8 @@ def get_loss_fn(config: Dict[str, Any]) -> nn.Module:
         joint_angle_loss = JointAngleLoss(
             joint_chains=joint_chains,
             angle_limits=angle_limits,
-            loss_type=angle_config.get("type", loss_type)
+            loss_type=angle_config.get("type", loss_type),
+            epsilon=angle_config.get("epsilon", epsilon)
         )
     
     # Combine into total loss
