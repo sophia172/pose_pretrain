@@ -417,14 +417,26 @@ class Trainer:
         # Track metrics
         total_loss = 0.0
         samples_count = 0
+        num_batches = len(self.val_loader)
         
         # Disable gradients for validation
         with torch.no_grad():
-            for batch in self.val_loader:
-                # Move data to device
-                inputs = batch["input"].to(self.device)
-                targets = batch["target"].to(self.device) if "target" in batch else None
+            for batch_idx, batch in enumerate(self.val_loader):
+                logger.debug(f"Processing batch {batch_idx+1}/{num_batches}")
                 
+                # Move data to device
+                logger.debug("Moving input data to device")
+                inputs = batch[self.config.get("input_type", "keypoints_2d")].to(self.device)
+                logger.debug(f"Input shape: {inputs.shape}")
+                
+                if self.config.get("target_type", "keypoints_2d") in batch:
+                    logger.debug("Moving target data to device")
+                    targets = batch[self.config.get("target_type", "keypoints_2d")].to(self.device)
+                    logger.debug(f"Target shape: {targets.shape}")
+                else:
+                    logger.debug("No target data found in batch")
+                    targets = None
+            
                 # Forward pass
                 outputs = self.model(inputs)
                 

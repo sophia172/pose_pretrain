@@ -59,9 +59,8 @@ class Human36MDataset(Dataset):
         preload: bool = False,
         sequence_length: int = 1,
         stride: int = 1,
-        cache_size: int = 10000,  # Number of samples to cache in memory
+        cache_size: int = 100000,  # Number of samples to cache in memory
         verbose: bool = False,
-        log_level: str = "INFO",
         dataset_mean_std=None,  # For normalization
     ):
         """
@@ -77,7 +76,6 @@ class Human36MDataset(Dataset):
             stride: Stride between consecutive sequences
             cache_size: Size of the in-memory LRU cache
             verbose: Enable verbose output
-            log_level: Logging level
             dataset_mean_std: Tuple of (mean, std) for normalization
         """
         self.json_files = json_files

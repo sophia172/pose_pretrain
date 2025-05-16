@@ -11,6 +11,9 @@ paths:
   # Training data files (split into multiple parts due to size)
   train_json_files:
     - "2Dto3D_train_part1.json"
+    - "2Dto3D_train_part2.json"
+    - "2Dto3D_train_part3.json"
+    - "2Dto3D_train_part4.json"
   val_json_files:
     - "2Dto3D_train_part5.json"
   # Test data (only 2D keypoints provided)
