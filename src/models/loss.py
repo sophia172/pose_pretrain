@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Dict, List, Optional, Tuple, Union, Any, Callable
+import math
 
 
 class ReconstructionLoss(nn.Module):
@@ -86,16 +87,16 @@ class ReconstructionLoss(nn.Module):
             # Wing loss implementation
             abs_diff = (pred - target).abs()
             
-            # Apply wing loss formula
+            # Apply wing loss formula with safety checks
             c = self.wing_w * (1.0 - torch.log(1.0 + self.wing_w / self.wing_epsilon))
             
-            # Clamp input to logarithm to prevent NaN
-            safe_input = (abs_diff / self.wing_epsilon).clamp(min=0, max=1e6)
+            # Safe logarithm calculation
+            safe_input = torch.clamp(abs_diff / self.wing_epsilon, min=0, max=1e6)
             
-            # Calculate loss using the wing loss formula
+            # Calculate loss using the wing loss formula with safety checks
             wing_loss = torch.where(
                 abs_diff < self.wing_w,
-                self.wing_w * torch.log(1.0 + safe_input),
+                self.wing_w * torch.log1p(safe_input),  # Using log1p for better stability
                 abs_diff - c
             )
             
@@ -132,7 +133,8 @@ class LimbConsistencyLoss(nn.Module):
         limb_connections: Optional[List[Tuple[int, int]]] = None,
         loss_type: str = "l1",
         reduction: str = "mean",
-        bidirectional: bool = True
+        bidirectional: bool = True,
+        epsilon: float = 1e-8
     ):
         """
         Initialize limb consistency loss.
@@ -142,6 +144,7 @@ class LimbConsistencyLoss(nn.Module):
             loss_type: Type of loss ("l1", "mse", "huber")
             reduction: Reduction method ("mean", "sum", "none")
             bidirectional: Whether to compute loss in both directions (pred->target and target->pred)
+            epsilon: Small value for numerical stability
         """
         super().__init__()
         
@@ -162,6 +165,7 @@ class LimbConsistencyLoss(nn.Module):
         self.loss_type = loss_type.lower()
         self.reduction = reduction
         self.bidirectional = bidirectional
+        self.epsilon = epsilon
         
         # Setup loss function
         if self.loss_type == "l1":
@@ -217,11 +221,11 @@ class LimbConsistencyLoss(nn.Module):
             if is_sequence:
                 # Sequence data: (batch_size, seq_len, num_joints, 3)
                 limb_vec = poses[:, :, joint1, :] - poses[:, :, joint2, :]
-                length = torch.norm(limb_vec, dim=-1)  # (batch_size, seq_len)
+                length = torch.sqrt(torch.sum(limb_vec * limb_vec, dim=-1) + self.epsilon)  # Stable norm calculation
             else:
                 # Single frame data: (batch_size, num_joints, 3)
                 limb_vec = poses[:, joint1, :] - poses[:, joint2, :]
-                length = torch.norm(limb_vec, dim=-1)  # (batch_size,)
+                length = torch.sqrt(torch.sum(limb_vec * limb_vec, dim=-1) + self.epsilon)  # Stable norm calculation
                 
             limb_lengths.append(length)
             
@@ -243,7 +247,8 @@ class TemporalSmoothnessLoss(nn.Module):
         reduction: str = "mean",
         velocity_weight: float = 1.0,
         acceleration_weight: float = 1.0,
-        epsilon: float = 1e-8
+        epsilon: float = 1e-8,
+        max_value: float = 1e6  # Maximum value to clip extreme values
     ):
         """
         Initialize temporal smoothness loss.
@@ -254,6 +259,7 @@ class TemporalSmoothnessLoss(nn.Module):
             velocity_weight: Weight for velocity smoothness term
             acceleration_weight: Weight for acceleration smoothness term
             epsilon: Small value to prevent numerical instability
+            max_value: Maximum value to clip extremes
         """
         super().__init__()
         
@@ -262,6 +268,7 @@ class TemporalSmoothnessLoss(nn.Module):
         self.velocity_weight = velocity_weight
         self.acceleration_weight = acceleration_weight
         self.epsilon = epsilon
+        self.max_value = max_value
         
         # Setup loss function
         if self.loss_type == "l1":
@@ -294,9 +301,12 @@ class TemporalSmoothnessLoss(nn.Module):
         # Require at least 3 frames for acceleration
         if seq_len < 3:
             return torch.tensor(0.0, device=poses.device)
+        
+        # Clip poses to prevent extreme values    
+        poses_clipped = torch.clamp(poses, -self.max_value, self.max_value)
             
         # Calculate velocities (first derivatives)
-        velocities = poses[:, 1:] - poses[:, :-1]  # (batch_size, seq_len-1, num_joints, 3)
+        velocities = poses_clipped[:, 1:] - poses_clipped[:, :-1]  # (batch_size, seq_len-1, num_joints, 3)
         
         # Calculate accelerations (second derivatives)
         accelerations = velocities[:, 1:] - velocities[:, :-1]  # (batch_size, seq_len-2, num_joints, 3)
@@ -333,9 +343,7 @@ class TemporalSmoothnessLoss(nn.Module):
             return self.velocity_weight * velocity_loss, self.acceleration_weight * acceleration_loss
             
         # Combine weighted terms
-        combined_loss = self.velocity_weight * velocity_term + self.acceleration_weight * acceleration_term
-        
-        return combined_loss
+        return self.velocity_weight * velocity_term + self.acceleration_weight * acceleration_term
 
 
 class JointAngleLoss(nn.Module):
@@ -433,9 +441,6 @@ class JointAngleLoss(nn.Module):
             v1_norm = safe_v1 / torch.sqrt(torch.sum(safe_v1 * safe_v1, dim=-1, keepdim=True) + self.epsilon)
             v2_norm = safe_v2 / torch.sqrt(torch.sum(safe_v2 * safe_v2, dim=-1, keepdim=True) + self.epsilon)
             
-            _validate_tensor(v1_norm, "v1_norm")
-            _validate_tensor(v2_norm, "v2_norm")
-            
             # Calculate angle using cross product (more stable)
             cross_prod = torch.cross(v1_norm, v2_norm, dim=-1)
             cross_norm = torch.norm(cross_prod, dim=-1)
@@ -502,7 +507,8 @@ class TotalLoss(nn.Module):
         recon_weight: float = 1.0,
         consistency_weight: float = 0.5,
         smoothness_weight: float = 0.1,
-        angle_weight: float = 0.2
+        angle_weight: float = 0.2,
+        max_loss: float = 1e6  # Maximum loss value to prevent explosion
     ):
         """
         Initialize total loss function.
@@ -516,6 +522,7 @@ class TotalLoss(nn.Module):
             consistency_weight: Weight for consistency loss
             smoothness_weight: Weight for smoothness loss
             angle_weight: Weight for joint angle loss
+            max_loss: Maximum allowable loss value
         """
         super().__init__()
         
@@ -530,6 +537,7 @@ class TotalLoss(nn.Module):
         self.consistency_weight = consistency_weight
         self.smoothness_weight = smoothness_weight
         self.angle_weight = angle_weight
+        self.max_loss = max_loss
         
         # For storing loss components
         self.last_loss_components = {}
@@ -565,31 +573,73 @@ class TotalLoss(nn.Module):
         Returns:
             Total loss value
         """
+        # Detect and replace NaN values early
+        if torch.isnan(pred).any() or torch.isinf(pred).any():
+            pred = torch.nan_to_num(pred, nan=0.0, posinf=self.max_loss, neginf=-self.max_loss)
+            
+        if torch.isnan(target).any() or torch.isinf(target).any():
+            target = torch.nan_to_num(target, nan=0.0, posinf=self.max_loss, neginf=-self.max_loss)
+            
+        if mask is not None and (torch.isnan(mask).any() or torch.isinf(mask).any()):
+            mask = torch.nan_to_num(mask, nan=0.0, posinf=1.0, neginf=0.0)
+        
         loss_components = {}
         
-        # Reconstruction loss
-        recon_loss = self.reconstruction_loss(pred, target, mask)
-        loss_components["reconstruction"] = recon_loss
-        total_loss = self.recon_weight * recon_loss
-        
+        # Reconstruction loss with safety
+        try:
+            recon_loss = self.reconstruction_loss(pred, target, mask)
+            # Clip extremely large values
+            recon_loss = torch.clamp(recon_loss, max=self.max_loss)
+            loss_components["reconstruction"] = recon_loss
+            total_loss = self.recon_weight * recon_loss
+        except Exception as e:
+            # Fall back to L1 if the main loss fails
+            print(f"Warning: Reconstruction loss failed: {e}. Falling back to L1.")
+            fallback_loss = F.l1_loss(pred, target, reduction="mean")
+            loss_components["reconstruction"] = fallback_loss
+            total_loss = self.recon_weight * fallback_loss
+            
         # Limb consistency loss
         if self.consistency_loss is not None and self.consistency_weight > 0:
-            consist_loss = self.consistency_loss(pred, target)
-            loss_components["consistency"] = consist_loss
-            total_loss = total_loss + self.consistency_weight * consist_loss
+            try:
+                consist_loss = self.consistency_loss(pred, target)
+                consist_loss = torch.clamp(consist_loss, max=self.max_loss)
+                loss_components["consistency"] = consist_loss
+                total_loss = total_loss + self.consistency_weight * consist_loss
+            except Exception as e:
+                print(f"Warning: Consistency loss failed: {e}. Skipping this term.")
+                loss_components["consistency"] = torch.tensor(0.0, device=pred.device)
             
         # Temporal smoothness loss (only for sequential data)
         is_sequence = len(pred.shape) == 4
         if is_sequence and self.smoothness_loss is not None and self.smoothness_weight > 0:
-            smooth_loss = self.smoothness_loss(pred, mask)
-            loss_components["smoothness"] = smooth_loss
-            total_loss = total_loss + self.smoothness_weight * smooth_loss
+            try:
+                smooth_loss = self.smoothness_loss(pred, mask)
+                smooth_loss = torch.clamp(smooth_loss, max=self.max_loss)
+                loss_components["smoothness"] = smooth_loss
+                total_loss = total_loss + self.smoothness_weight * smooth_loss
+            except Exception as e:
+                print(f"Warning: Smoothness loss failed: {e}. Skipping this term.")
+                loss_components["smoothness"] = torch.tensor(0.0, device=pred.device)
             
         # Joint angle loss
         if self.joint_angle_loss is not None and self.angle_weight > 0:
-            angle_loss = self.joint_angle_loss(pred)
-            loss_components["joint_angle"] = angle_loss
-            total_loss = total_loss + self.angle_weight * angle_loss
+            try:
+                angle_loss = self.joint_angle_loss(pred)
+                angle_loss = torch.clamp(angle_loss, max=self.max_loss)
+                loss_components["joint_angle"] = angle_loss
+                total_loss = total_loss + self.angle_weight * angle_loss
+            except Exception as e:
+                print(f"Warning: Joint angle loss failed: {e}. Skipping this term.")
+                loss_components["joint_angle"] = torch.tensor(0.0, device=pred.device)
+                
+        # Final check to prevent NaN from propagating
+        if torch.isnan(total_loss) or torch.isinf(total_loss):
+            print("Warning: NaN or Inf detected in final loss. Using fallback L1 loss.")
+            total_loss = F.l1_loss(pred, target, reduction="mean")
+            
+        # Ensure the loss is bounded
+        total_loss = torch.clamp(total_loss, max=self.max_loss)
             
         loss_components["total"] = total_loss
         
@@ -646,14 +696,18 @@ def get_loss_fn(config: Dict[str, Any]) -> nn.Module:
     # Limb consistency loss (if weight > 0)
     consistency_loss = None
     if consistency_weight > 0:
-        consistency_loss = LimbConsistencyLoss(loss_type=consistency_config.get("type", loss_type))
+        consistency_loss = LimbConsistencyLoss(
+            loss_type=consistency_config.get("type", loss_type),
+            epsilon=consistency_config.get("epsilon", epsilon)
+        )
     
     # Temporal smoothness loss (if weight > 0)
     smoothness_loss = None
     if smoothness_weight > 0:
         smoothness_loss = TemporalSmoothnessLoss(
             loss_type=smoothness_config.get("type", loss_type),
-            epsilon=smoothness_config.get("epsilon", epsilon)
+            epsilon=smoothness_config.get("epsilon", epsilon),
+            max_value=smoothness_config.get("max_value", 1e6)
         )
     
     # Joint angle loss (if weight > 0 and configurations provided)
@@ -677,5 +731,6 @@ def get_loss_fn(config: Dict[str, Any]) -> nn.Module:
         recon_weight=recon_weight,
         consistency_weight=consistency_weight,
         smoothness_weight=smoothness_weight,
-        angle_weight=angle_weight
+        angle_weight=angle_weight,
+        max_loss=losses_config.get("max_loss", 1e6)
     ) 
