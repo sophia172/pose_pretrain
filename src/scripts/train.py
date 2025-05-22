@@ -42,7 +42,7 @@ from src.models.pretrain_vit_model import PretrainViTModel
 from src.models.loss import get_loss_fn
 from src.trainers.trainer import Trainer, get_optimizer, get_scheduler
 from src.utils.device import get_device, print_device_info
-
+from src.utils.logger import get_logger, setup_logging
 
 def parse_args():
     """Parse command line arguments."""
@@ -58,8 +58,8 @@ def parse_args():
                         help="GPU ID to use (default: 0)")
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed (default: 42)")
-    parser.add_argument("--debug", action="store_true",
-                        help="Enable debug mode")
+    parser.add_argument("--debug", type=int, default=0,
+                        help="Debug level (default: 0)")
     parser.add_argument("--model_type", type=str, default="transformer",
                         help="Model type to use (transformer or vit)")
     parser.add_argument("--verbose", action="store_true",
@@ -84,29 +84,6 @@ def load_config(config_path: str) -> Dict[str, Any]:
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
     return config
-
-
-def setup_logging(output_dir: str, debug: bool = False) -> None:
-    """Set up logging configuration."""
-    log_level = logging.DEBUG if debug else logging.INFO
-    
-    # Create log directory
-    log_dir = os.path.join(output_dir, "logs")
-    os.makedirs(log_dir, exist_ok=True)
-    
-    # Create log file handler
-    log_file = os.path.join(log_dir, "train.log")
-    
-    # Configure logging
-    logging.basicConfig(
-        level=log_level,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        handlers=[
-            logging.FileHandler(log_file),
-            logging.StreamHandler()
-        ]
-    )
-
 
 def create_model(config: Dict[str, Any], model_type: str = "transformer") -> nn.Module:
     """Create model based on configuration and model type."""
@@ -219,15 +196,6 @@ def create_model(config: Dict[str, Any], model_type: str = "transformer") -> nn.
     
     return model
 
-
-def print_progress_header(text, width=80):
-    """Print a centered header with decoration."""
-    padding = max(0, (width - len(text) - 4) // 2)
-    print(f"\n{Fore.YELLOW}{'=' * width}")
-    print(f"{Fore.YELLOW}={' ' * padding}{Fore.CYAN}{text}{Fore.YELLOW}{' ' * padding}=")
-    print(f"{Fore.YELLOW}{'=' * width}\n")
-
-
 class TrainingProgressCallback:
     """Callback for tracking training progress with a progress bar."""
     
@@ -287,24 +255,10 @@ def main():
     """Main function for training script."""
     # Parse command line arguments
     args = parse_args()
-    
-    # Print welcome message
-    print_progress_header("Human Pose Estimation Pretraining")
-    
-    print(f"{Fore.CYAN}🔧 Initializing training environment...")
-    
-    # Set random seed
-    set_seed(args.seed)
-    print(f"{Fore.GREEN}✓ Random seed set to {args.seed}")
-    
+
     # Load configuration
     config = load_config(args.config)
-    
-    # Override config with command line arguments
-    if args.debug:
-        config["experiment"]["debug"] = True
-        print(f"{Fore.YELLOW}⚠️ Debug mode enabled")
-    
+
     # Set up experiment name
     if args.experiment:
         experiment_name = args.experiment
@@ -314,21 +268,39 @@ def main():
     
     print(f"{Fore.GREEN}✓ Experiment name: {experiment_name}")
     
+
     # Set up output directory
     output_dir = os.path.join(config["paths"]["output_dir"], experiment_name)
     os.makedirs(output_dir, exist_ok=True)
     print(f"{Fore.GREEN}✓ Output directory created: {output_dir}")
     
     # Set up logging
-    setup_logging(output_dir, debug=config["experiment"].get("debug", False))
-    logger = logging.getLogger(__name__)
+    setup_logging(output_dir, debug=config["experiment"].get("debug", 0))
+    logger = get_logger(__name__)
+
+    # Print welcome message
+    logger.header("Human Pose Estimation Pretraining")
+    
+    print(f"{Fore.CYAN}🔧 Initializing training environment...")
+    
+    # Set random seed
+    set_seed(args.seed)
+    print(f"{Fore.GREEN}✓ Random seed set to {args.seed}")
+    
+    
+    # Override config with command line arguments
+    if args.debug:
+        config["experiment"]["debug"] = True
+        print(f"{Fore.YELLOW}⚠️ Debug mode enabled")
+    
+    
     
     # Log configuration
     logger.info(f"Starting experiment: {experiment_name}")
     logger.info(f"Configuration: {config}")
     
     # Print progress header for device setup
-    print_progress_header("Device Configuration")
+    logger.header("Device Configuration")
     
     # Set GPU device
     device = get_device(args.gpu)
@@ -338,7 +310,7 @@ def main():
     print_device_info()
     
     # Print progress header for data loading
-    print_progress_header("Data Loading")
+    logger.header("Data Loading")
     
     # Get dataloaders
     print(f"{Fore.CYAN}📊 Loading datasets...")
@@ -352,7 +324,7 @@ def main():
         print(f"{Fore.YELLOW}⚠️ No validation set provided")
     
     # Print progress header for model creation
-    print_progress_header("Model Creation")
+    logger.header("Model Creation")
     
     # Determine model type to use
     model_type = args.model_type
@@ -385,7 +357,7 @@ def main():
     print(f"{Fore.GREEN}✓ Using loss function: {loss_fn.description}")
     
     # Print progress header for training setup
-    print_progress_header("Training Setup")
+    logger.header("Training Setup")
     
     # Training parameters
     epochs = training_config.get("epochs", 100)
@@ -422,7 +394,7 @@ def main():
     )
     
     # Print progress header for training
-    print_progress_header("Training")
+    logger.header("Training")
     
     # Add progress callback to trainer
     trainer.set_progress_callback(progress_callback.on_epoch_start, 
@@ -443,7 +415,7 @@ def main():
     progress_callback.close()
     
     # Print progress header for results
-    print_progress_header("Training Complete")
+    logger.header("Training Complete")
     
     # Log final metrics
     print(f"{Fore.GREEN}✅ Training completed in {int(hours)}h {int(minutes)}m {int(seconds)}s")

@@ -5,10 +5,12 @@ Evaluation script for Human Pose Estimation models.
 This script loads a trained model and evaluates its performance
 using various metrics on the test dataset.
 """
+from datetime import datetime
 import os
 import sys
 import argparse
 import logging
+from colorama import Fore
 import yaml
 import json
 import time
@@ -26,7 +28,7 @@ from data.dataloader import get_dataloaders
 from models.pretrain_model import PretrainModel
 from models.loss import get_loss_fn
 from trainers.trainer import Trainer
-
+from utils.logger import get_logger, setup_logging
 
 def parse_args():
     """Parse command line arguments."""
@@ -391,23 +393,28 @@ def main():
     """Main function for evaluation script."""
     # Parse command line arguments
     args = parse_args()
-    
-    # Set up logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        handlers=[logging.StreamHandler()]
-    )
-    
-    global logger
-    logger = logging.getLogger(__name__)
-    
+
     # Load configuration
     config = load_config(args.config)
+    
+    # Set up experiment name
+    if args.experiment:
+        experiment_name = args.experiment
+    else:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        experiment_name = f"{config['experiment']['name']}_{timestamp}"
+    
+    print(f"{Fore.GREEN}✓ Experiment name: {experiment_name}")
     
     # Set up output directory
     output_dir = args.output
     os.makedirs(output_dir, exist_ok=True)
+    print(f"{Fore.GREEN}✓ Output directory created: {output_dir}")
+    
+    # Set up logging
+    setup_logging(output_dir, debug=config["experiment"].get("debug", 0))
+    logger = get_logger(__name__)
+    
     
     # Save a copy of the config
     with open(os.path.join(output_dir, "config.yaml"), "w") as f:

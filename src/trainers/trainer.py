@@ -6,7 +6,7 @@ evaluation, and logging.
 """
 import os
 import time
-import logging
+
 import platform
 from typing import Dict, List, Optional, Tuple, Union, Any, Callable
 import sys
@@ -17,11 +17,9 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 import numpy as np
 
-
 from src.utils.device import get_device
-
-logger = logging.getLogger(__name__)
-
+from src.utils.logger import get_logger
+logger = get_logger(__name__)
 
 class Trainer:
     """
@@ -145,7 +143,8 @@ class Trainer:
         # Resume training if checkpoint provided
         if resume_from is not None:
             self._load_checkpoint(resume_from)
-            
+        
+        
         # Log trainer setup
         logger.info(f"Trainer initialized with {self.device} device")
         logger.info(f"Training for {self.max_epochs} epochs")
@@ -302,7 +301,7 @@ class Trainer:
                 targets = None
             
             # Zero gradients
-            logger.debug("Zeroing gradients")
+            logger.gradient("Zeroing gradients")
             self.optimizer.zero_grad()
             
             # Forward pass with mixed precision if enabled
@@ -319,7 +318,7 @@ class Trainer:
                     else:
                         loss = criterion(outputs, targets)
                     
-                    logger.debug(f"Computed loss using criterion: {loss.item():.4f}")
+                    logger.loss(f"Computed loss using criterion: {loss.item():.4f}")
                     
                 # Backward pass with scaler
                 logger.debug("Backward pass with gradient scaler")
@@ -327,12 +326,11 @@ class Trainer:
                 
                 # Gradient clipping if enabled
                 if self.clip_grad_norm is not None:
-                    logger.debug(f"Applying gradient clipping with norm {self.clip_grad_norm}")
+                    logger.gradient(f"Current maximum Gradient: {max(p.grad.norm() for p in self.model.parameters() if p.grad is not None)}")
                     self.scaler.unscale_(self.optimizer)
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_grad_norm)
                 
                 # Optimizer step with scaler
-                logger.debug("Optimizer step with gradient scaler")
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
             else:
@@ -348,16 +346,17 @@ class Trainer:
                 else:
                     loss = criterion(outputs, targets)
                     
-                logger.debug(f"Computed loss using criterion: {loss.item():.4f}")
-              
+                logger.loss(f"Computed loss using criterion: {loss.item():.4f}")
+
                 # Backward pass
                 logger.debug("Backward pass")
                 loss.backward()
                 
                 # Gradient clipping if enabled
                 if self.clip_grad_norm is not None:
-                    logger.debug(f"Applying gradient clipping with norm {self.clip_grad_norm}")
+                    logger.gradient(f"Current maximum Gradient: {max(p.grad.norm() for p in self.model.parameters() if p.grad is not None)}")
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_grad_norm)
+                 
                 
                 # Optimizer step
                 logger.debug("Optimizer step")
@@ -560,13 +559,26 @@ class Trainer:
         
         # Additional metrics
         total_pred_errors = 0.0
+
+        num_batches = len(test_loader)
         
         # Disable gradients for evaluation
         with torch.no_grad():
-            for batch in test_loader:
+            for batch_idx, batch in enumerate(test_loader):
+                logger.debug(f"Processing batch {batch_idx+1}/{num_batches}")
+                
                 # Move data to device
-                inputs = batch["input"].to(self.device)
-                targets = batch["target"].to(self.device) if "target" in batch else None
+                logger.debug("Moving input data to device")
+                inputs = batch[self.config.get("input_type", "keypoints_2d")].to(self.device)
+                logger.debug(f"Input shape: {inputs.shape}")
+                
+                if self.config.get("target_type", "keypoints_2d") in batch:
+                    logger.debug("Moving target data to device")
+                    targets = batch[self.config.get("target_type", "keypoints_2d")].to(self.device)
+                    logger.debug(f"Target shape: {targets.shape}")
+                else:
+                    logger.debug("No target data found in batch")
+                    targets = None
                 
                 # Forward pass
                 outputs = self.model(inputs)

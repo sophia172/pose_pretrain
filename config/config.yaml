@@ -5,7 +5,7 @@ experiment:
   name: h36m_unsupervised_pretrain
   description: "Unsupervised pretraining for Human3.6M dataset"
   seed: 42
-  debug: false
+  debug: 2 # 0: off, 1: on, 2: debug ML details
 
 # Paths
 paths:
