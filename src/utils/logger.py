@@ -19,7 +19,7 @@ from tqdm import tqdm
 
 # Define custom logging level
 DEBUGML = 15  # Between DEBUG (10) and INFO (20)
-DEBUGDATA = 16  # Between DEBUG (10) and INFO (20)
+DEBUGDATA = 14  # Between DEBUG (10) and INFO (20)
 logging.addLevelName(DEBUGML, "DEBUGML")
 logging.addLevelName(DEBUGDATA, "DEBUGDATA")
 setattr(logging, "DEBUGML", DEBUGML)
@@ -29,7 +29,7 @@ def get_logger(name=None):
     # You can add more configuration here if needed
     return logging.getLogger(name)
 
-def setup_logging(output_dir: str, debug: bool = False) -> None:
+def setup_logging(output_dir: str, debug: int = 0) -> None:
     """Set up logging configuration."""
     log_level = logging.DEBUG if debug == 1 else \
         logging.DEBUGML if debug == 2 else \

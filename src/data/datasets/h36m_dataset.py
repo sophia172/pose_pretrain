@@ -337,7 +337,6 @@ class Human36MDataset(Dataset):
         # Initialize result containers
         keypoints_2d = None
         keypoints_3d = None
-        logger.data(f"Extracting keypoints from frame data: {frame_data}")
         try:
             # Process 2D keypoints if needed
             if self.keypoint_type in ['2d', 'both']:

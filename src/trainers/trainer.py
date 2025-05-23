@@ -306,7 +306,7 @@ class Trainer:
             
             # Forward pass with mixed precision if enabled
             if self.mixed_precision and self.device.type == 'cuda':
-                logger.debug("Using mixed precision training")
+                logger.debug("Using mixed precision training with CUDA")
                 with torch.cuda.amp.autocast():
                     logger.debug("Forward pass with mixed precision")
                     outputs = self.model(inputs)
@@ -326,17 +326,15 @@ class Trainer:
                 
                 # Gradient clipping if enabled
                 if self.clip_grad_norm is not None:
-                    logger.gradient(f"Current maximum Gradient: {max(p.grad.norm() for p in self.model.parameters() if p.grad is not None)}")
                     self.scaler.unscale_(self.optimizer)
+                    logger.gradient(f"Current maximum Gradient: {max(p.grad.norm() for p in self.model.parameters() if p.grad is not None)}")
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_grad_norm)
                 
                 # Optimizer step with scaler
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
             else:
-                logger.debug("Using standard precision training")
-                # Standard forward pass
-                logger.debug("Forward pass")
+                logger.debug("Using standard precision training without CUDA")
                 outputs = self.model(inputs)
                 logger.debug(f"Model output keys: {outputs.keys() if isinstance(outputs, dict) else 'tensor'}")
                 
@@ -357,7 +355,6 @@ class Trainer:
                     logger.gradient(f"Current maximum Gradient: {max(p.grad.norm() for p in self.model.parameters() if p.grad is not None)}")
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_grad_norm)
                  
-                
                 # Optimizer step
                 logger.debug("Optimizer step")
                 self.optimizer.step()
