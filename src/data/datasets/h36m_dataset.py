@@ -3,15 +3,17 @@ Human3.6M Dataset Implementation - Optimized Version
 """
 import os
 import json
-import logging
 import time
+import re
+from collections import defaultdict
 from typing import Dict, List, Optional, Tuple, Union, Any
 from collections import OrderedDict
 import numpy as np
 import torch
 from torch.utils.data import Dataset
+from src.utils.logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class LRUCache:
@@ -56,12 +58,12 @@ class Human36MDataset(Dataset):
         keypoint_type: str = 'both',  # 'both', '2d', or '3d'
         joint_indices: Optional[List[int]] = None,
         transform=None,
-        preload: bool = False,
+        preload: bool = True,
+        normalize: bool = True,
         sequence_length: int = 1,
         stride: int = 1,
         cache_size: int = 100000,  # Number of samples to cache in memory
-        verbose: bool = False,
-        dataset_mean_std=None,  # For normalization
+        verbose: bool = True,
     ):
         """
         Initialize the Human3.6M dataset.
@@ -76,18 +78,18 @@ class Human36MDataset(Dataset):
             stride: Stride between consecutive sequences
             cache_size: Size of the in-memory LRU cache
             verbose: Enable verbose output
-            dataset_mean_std: Tuple of (mean, std) for normalization
         """
         self.json_files = json_files
         self.keypoint_type = keypoint_type
         self.joint_indices = joint_indices
         self.transform = transform
         self.preload = preload
+        self.normalize = normalize
         self.sequence_length = sequence_length
         self.stride = stride
         self.verbose = verbose
         self.cache_size = cache_size
-        self.dataset_mean_std = dataset_mean_std 
+        self.dataset_mean_std = {}
         
         # Map frame IDs to (file_idx, frame_idx) for retrieval
         self.frame_mapping = []
@@ -118,6 +120,9 @@ class Human36MDataset(Dataset):
             start_time = time.time()
             self._preload_data()
             logger.info(f"Preloaded data in {time.time() - start_time:.2f}s")
+            if self.normalize:
+                self._compute_mean_std()
+        # Pre-compute joint indices to avoid repeated string conversions
         logger.info(f"Dataset initialized with {len(self.frame_mapping)} sequences")
         
         # Pre-compute joint indices to avoid repeated string conversions
@@ -251,6 +256,30 @@ class Human36MDataset(Dataset):
         """Return the number of samples in the dataset."""
         return len(self.frame_mapping)
     
+    def _compute_mean_std(self):
+        """Compute mean and std of keypoints for normalization."""
+        keypoint_types = ['keypoints_2d', 'keypoints_3d']
+        n = {keypoint_type: 0 for keypoint_type in keypoint_types}
+        mean = {keypoint_type: np.zeros(int(re.findall(r'\d+', keypoint_type)[0])) for keypoint_type in keypoint_types}
+        M2 = {keypoint_type: np.zeros(int(re.findall(r'\d+', keypoint_type)[0])) for keypoint_type in keypoint_types}
+        for file_idx in self.file_cache.keys():
+            for frame_id in self.file_cache[file_idx].keys():
+                for keypoint_type in keypoint_types:
+                    if keypoint_type in self.file_cache[file_idx][frame_id]:
+                        frame_data = self.file_cache[file_idx][frame_id][keypoint_type]
+                        frame_data = np.array([list(frame_data[str(i)].values()) for i in range(len(frame_data))])
+                        n[keypoint_type] += 1
+                        delta = np.mean(frame_data, axis=0) - mean[keypoint_type]
+                        mean[keypoint_type] += delta / n[keypoint_type]
+                        M2[keypoint_type] += delta * (np.mean(frame_data, axis=0) - mean[keypoint_type])
+        for keypoint_type in keypoint_types:
+            if n[keypoint_type] > 1:
+                self.dataset_mean_std[keypoint_type] = (mean[keypoint_type], np.sqrt(M2[keypoint_type] / (n[keypoint_type] - 1)))
+            else:
+                self.dataset_mean_std[keypoint_type] = (mean[keypoint_type], 1)
+            logger.data(f"Computed mean and std for {keypoint_type}: {self.dataset_mean_std[keypoint_type]}")
+
+    
     def _load_frame_data(self, file_idx: int, frame_id: str) -> Dict[str, Any]:
         """
         Load data for a specific frame.
@@ -308,14 +337,15 @@ class Human36MDataset(Dataset):
         # Initialize result containers
         keypoints_2d = None
         keypoints_3d = None
-        
+        logger.data(f"Extracting keypoints from frame data: {frame_data}")
         try:
             # Process 2D keypoints if needed
             if self.keypoint_type in ['2d', 'both']:
-                if 'keypoints_2d' in frame_data:
+                keypoint_type = 'keypoints_2d'
+                if keypoint_type in frame_data:
                     # Get all joint indices
                     if self.joint_indices is None:
-                        joint_indices = sorted([int(k) for k in frame_data['keypoints_2d'].keys()])
+                        joint_indices = sorted([int(k) for k in frame_data[keypoint_type].keys()])
                         joint_indices_str = [str(idx) for idx in joint_indices]
                     else:
                         joint_indices = self.joint_indices
@@ -325,7 +355,7 @@ class Human36MDataset(Dataset):
                     keypoints_2d = np.zeros((len(joint_indices), 2), dtype=np.float32)
                     
                     # Fast extraction using numpy operations
-                    kp_2d_data = frame_data['keypoints_2d']
+                    kp_2d_data = frame_data[keypoint_type]
                     for i, joint_idx_str in enumerate(joint_indices_str):
                         if joint_idx_str in kp_2d_data:
                             joint_data = kp_2d_data[joint_idx_str]
@@ -333,8 +363,9 @@ class Human36MDataset(Dataset):
                             keypoints_2d[i, 1] = joint_data['y']
                     
                     # Normalize if mean and std are provided
-                    if self.dataset_mean_std is not None:
-                        mean_2d, std_2d = self.dataset_mean_std[0]
+                    if self.dataset_mean_std is not {} and self.normalize:
+                        mean_2d, std_2d = self.dataset_mean_std[keypoint_type]
+                        logger.data(f"Normalizing 2D keypoints with mean: {mean_2d} and std: {std_2d}")
                         keypoints_2d = (keypoints_2d - mean_2d) / std_2d
                 else:
                     logger.error("2D keypoints not found in data")
@@ -342,7 +373,8 @@ class Human36MDataset(Dataset):
             
             # Process 3D keypoints if needed
             if self.keypoint_type in ['3d', 'both']:
-                if 'keypoints_3d' in frame_data:
+                keypoint_type = 'keypoints_3d'
+                if keypoint_type in frame_data:
                     # Get all joint indices
                     if self.joint_indices is None:
                         joint_indices = sorted([int(k) for k in frame_data['keypoints_3d'].keys()])
@@ -355,7 +387,7 @@ class Human36MDataset(Dataset):
                     keypoints_3d = np.zeros((len(joint_indices), 3), dtype=np.float32)
                     
                     # Fast extraction using numpy operations
-                    kp_3d_data = frame_data['keypoints_3d']
+                    kp_3d_data = frame_data[keypoint_type]
                     for i, joint_idx_str in enumerate(joint_indices_str):
                         if joint_idx_str in kp_3d_data:
                             joint_data = kp_3d_data[joint_idx_str]
@@ -364,8 +396,9 @@ class Human36MDataset(Dataset):
                             keypoints_3d[i, 2] = joint_data['z']
                     
                     # Normalize if mean and std are provided
-                    if self.dataset_mean_std is not None:
-                        mean_3d, std_3d = self.dataset_mean_std[1]
+                    if self.dataset_mean_std is not {} and self.normalize:
+                        mean_3d, std_3d = self.dataset_mean_std[keypoint_type]
+                        logger.data(f"Normalizing 3D keypoints with mean: {mean_3d} and std: {std_3d}")
                         keypoints_3d = (keypoints_3d - mean_3d) / std_3d
                 else:
                     logger.error("3D keypoints not found in data")
@@ -526,8 +559,7 @@ class Human36MDataset(Dataset):
                         hit_rate = self.cache_hits / total * 100
                         if self.load_times:
                             avg_load_time = sum(self.load_times) / len(self.load_times)
-                            logger.info(f"Cache hit rate: {hit_rate:.1f}%, Avg load time: {avg_load_time*1000:.2f}ms")
-            
+                            logger.info(f"Cache hit rate: {hit_rate:.1f}%, Avg load time: {avg_load_time*1000:.2f}ms")               
             return result
             
         except Exception as e:
@@ -572,73 +604,6 @@ class Human36MDataset(Dataset):
             'max_cache_size': self.cache_size
         }
     
-    def compute_dataset_stats(self) -> Tuple[Tuple[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray]]:
-        """
-        Compute mean and standard deviation of the dataset.
-        Returns ((mean_2d, std_2d), (mean_3d, std_3d))
-        """
-        logger.info("Computing dataset statistics...")
-        
-        # Use optimized calculation with parallel processing if available
-        try:
-            import concurrent.futures
-            from functools import partial
-            
-            # Pre-allocate arrays for statistics
-            joint_count = 133 if self.joint_indices is None else len(self.joint_indices)
-            
-            # Shared arrays for accumulating statistics
-            sum_2d = np.zeros((joint_count, 2))
-            sum_3d = np.zeros((joint_count, 3))
-            sum_sq_2d = np.zeros((joint_count, 2))
-            sum_sq_3d = np.zeros((joint_count, 3))
-            count = 0
-            
-            # Sample a subset of the dataset for efficiency
-            indices = np.random.choice(len(self), min(10000, len(self)), replace=False)
-            
-            # Use batched sampling for efficiency
-            batch_size = 100
-            for batch_idx in range(0, len(indices), batch_size):
-                batch_indices = indices[batch_idx:batch_idx+batch_size]
-                
-                # Get all samples in current batch
-                samples = [self[idx] for idx in batch_indices]
-                
-                for sample in samples:
-                    if 'keypoints_2d' in sample:
-                        kp_2d = sample['keypoints_2d'].numpy() if isinstance(sample['keypoints_2d'], torch.Tensor) else sample['keypoints_2d']
-                        if len(kp_2d.shape) == 3:  # If sequence data
-                            kp_2d = kp_2d[0]  # Just use the first frame
-                        sum_2d += kp_2d
-                        sum_sq_2d += kp_2d**2
-                        
-                    if 'keypoints_3d' in sample:
-                        kp_3d = sample['keypoints_3d'].numpy() if isinstance(sample['keypoints_3d'], torch.Tensor) else sample['keypoints_3d']
-                        if len(kp_3d.shape) == 3:  # If sequence data
-                            kp_3d = kp_3d[0]  # Just use the first frame
-                        sum_3d += kp_3d
-                        sum_sq_3d += kp_3d**2
-                        
-                    count += 1
-            
-            # Compute mean and std
-            mean_2d = sum_2d / count
-            mean_3d = sum_3d / count
-            
-            std_2d = np.sqrt(sum_sq_2d / count - mean_2d**2)
-            std_3d = np.sqrt(sum_sq_3d / count - mean_3d**2)
-            logger.info(f"Computed statistics over {count} samples")
-            
-            # Set small values to 1 to avoid division by zero
-            std_2d[std_2d < 1e-6] = 1.0
-            std_3d[std_3d < 1e-6] = 1.0
-            
-            return ((mean_2d, std_2d), (mean_3d, std_3d))
-        except Exception as e:
-            logger.error(f"Error in compute_dataset_stats: {e}")
-            raise
-
     def __repr__(self) -> str:
         """Return string representation of the dataset."""
         return (f"Human36MDataset(files: {len(self.json_files)}, "

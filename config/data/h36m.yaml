@@ -51,7 +51,7 @@ properties:
 
 # Data preprocessing
 preprocessing:
-  normalize: true  # Normalize poses
+  normalize: true  # Normalize poses when extracting samples in dataloader
   mean_subtraction: true  # Subtract mean pose
   scale_factor: 1.0
   center_at_root_joint: true  # Center poses at root joint

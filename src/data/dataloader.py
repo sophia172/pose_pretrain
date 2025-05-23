@@ -131,6 +131,7 @@ def get_human36m_dataloaders(config: Dict[str, Any]) -> Tuple[DataLoader, Option
     stride = config['data'].get('stride', 1)
     keypoint_type = config['data'].get('keypoint_type', 'both')
     preload = config['data'].get('preload', False)
+    normalize = config['data'].get('normalize', True)
     
     # Set up transforms
     flip_indices = dataset_config.get('augmentation', {}).get('flip_indices', None)
@@ -157,6 +158,7 @@ def get_human36m_dataloaders(config: Dict[str, Any]) -> Tuple[DataLoader, Option
         keypoint_type=keypoint_type,
         transform=train_transform,
         preload=preload,
+        normalize=normalize,
         sequence_length=sequence_length,
         stride=stride,
         verbose=config.get('experiment', {}).get('debug', False)
@@ -180,6 +182,7 @@ def get_human36m_dataloaders(config: Dict[str, Any]) -> Tuple[DataLoader, Option
             keypoint_type=keypoint_type,
             transform=val_transform,
             preload=preload,
+            normalize=normalize,
             sequence_length=sequence_length,
             stride=stride,
             verbose=config.get('experiment', {}).get('debug', False)

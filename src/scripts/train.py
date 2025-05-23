@@ -290,7 +290,7 @@ def main():
     
     # Override config with command line arguments
     if args.debug:
-        config["experiment"]["debug"] = True
+        config["experiment"]["debug"] = 1
         print(f"{Fore.YELLOW}⚠️ Debug mode enabled")
     
     

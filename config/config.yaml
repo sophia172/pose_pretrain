@@ -5,7 +5,7 @@ experiment:
   name: h36m_unsupervised_pretrain
   description: "Unsupervised pretraining for Human3.6M dataset"
   seed: 42
-  debug: 2 # 0: off, 1: on, 2: debug ML details
+  debug: 2 # 0: off, 1: on, 2: debug ML details, 3: debug data processors.
 
 # Paths
 paths:
@@ -28,6 +28,7 @@ data:
   stride: 1
   keypoint_type: "both"  # Options: 2d, 3d, both
   preload: True  # Whether to preload data in memory
+  normalize: true  # Normalize poses
 
 input_type: "keypoints_2d"
 target_type: "keypoints_3d"
@@ -45,7 +46,7 @@ training:
   epochs: 100
   learning_rate: 0.0001
   weight_decay: 0.0001
-  grad_clip: 1.0
+  grad_clip: 3.0
   mixed_precision: true
   resume: false
   early_stopping:

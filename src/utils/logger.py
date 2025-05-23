@@ -19,9 +19,11 @@ from tqdm import tqdm
 
 # Define custom logging level
 DEBUGML = 15  # Between DEBUG (10) and INFO (20)
+DEBUGDATA = 16  # Between DEBUG (10) and INFO (20)
 logging.addLevelName(DEBUGML, "DEBUGML")
-# Add DEBUGML as an attribute to the logging module so it can be used as logging.DEBUGML
+logging.addLevelName(DEBUGDATA, "DEBUGDATA")
 setattr(logging, "DEBUGML", DEBUGML)
+setattr(logging, "DEBUGDATA", DEBUGDATA)
 
 def get_logger(name=None):
     # You can add more configuration here if needed
@@ -29,7 +31,10 @@ def get_logger(name=None):
 
 def setup_logging(output_dir: str, debug: bool = False) -> None:
     """Set up logging configuration."""
-    log_level = logging.DEBUG if debug == 1 else logging.DEBUGML if debug == 2 else logging.INFO
+    log_level = logging.DEBUG if debug == 1 else \
+        logging.DEBUGML if debug == 2 else \
+        logging.DEBUGDATA if debug == 3 else \
+        logging.INFO
     
     # Create log directory
     log_dir = os.path.join(output_dir, "logs")
@@ -67,6 +72,9 @@ class Logger(logging.Logger):
 
     def loss(self, msg, *args, **kwargs):
         self.log(logging.DEBUGML, f"[LOSS] {msg}", *args, **kwargs)
+
+    def data(self, msg, *args, **kwargs):
+        self.log(logging.DEBUGDATA, f"[DATA] {msg}", *args, **kwargs)
 
     def header(self, text, width=80, *args, **kwargs):
         """Print a centered header with decoration, without log prefix."""
