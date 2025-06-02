@@ -427,24 +427,19 @@ def main():
         print(f"\n{Fore.CYAN}📈 Training Loss Progression:")
         max_len = 40  # Max chart width
         
-        # Filter out NaN values before calculating min/max
-        valid_losses = [loss for loss in metrics["train_loss"] if not torch.isnan(loss).any() if not math.isnan(loss) if loss is not None]
+       
+        max_loss = max(metrics["train_loss"])
+        min_loss = min(metrics["train_loss"])
+        loss_range = max_loss - min_loss
         
-        if not valid_losses:
-            print(f"{Fore.YELLOW}⚠️ Cannot visualize training loss - NaN values detected")
-        else:
-            max_loss = max(valid_losses)
-            min_loss = min(valid_losses)
-            loss_range = max_loss - min_loss
-            
-            for i, loss in enumerate(metrics["train_loss"]):
-                if i % max(1, len(metrics["train_loss"]) // 10) == 0:  # Print ~10 points
-                    if math.isnan(loss) or torch.isnan(torch.tensor(loss)).any():
-                        print(f"{Fore.BLUE}Epoch {i+1:3d}: {Fore.RED}NaN    {Fore.YELLOW}{'!' * max_len}")
-                    else:
-                        normalized = int((loss - min_loss) / (loss_range + 1e-8) * max_len) if loss_range > 0 else 0
-                        bar = '█' * (max_len - normalized) + '░' * normalized
-                        print(f"{Fore.BLUE}Epoch {i+1:3d}: {loss:.4f} {Fore.YELLOW}{bar}")
+        for i, loss in enumerate(metrics["train_loss"]):
+            if i % max(1, len(metrics["train_loss"]) // 10) == 0:  # Print ~10 points
+                if math.isnan(loss) or torch.isnan(torch.tensor(loss)).any():
+                    print(f"{Fore.BLUE}Epoch {i+1:3d}: {Fore.RED}NaN    {Fore.YELLOW}{'!' * max_len}")
+                else:
+                    normalized = int((loss - min_loss) / (loss_range + 1e-8) * max_len) if loss_range > 0 else 0
+                    bar = '█' * (max_len - normalized) + '░' * normalized
+                    print(f"{Fore.BLUE}Epoch {i+1:3d}: {loss:.4f} {Fore.YELLOW}{bar}")
     
     logger.info(f"Training completed with final metrics: {metrics}")
     logger.info(f"Best validation loss: {trainer.best_val_loss:.4f}")
